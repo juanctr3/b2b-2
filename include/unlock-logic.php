@@ -23,25 +23,32 @@ function sms_render_unlock_page() {
     // Verificar si ya desbloqueó
     $is_unlocked = $wpdb->get_var("SELECT id FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id = $lead_id AND provider_user_id = $user_id");
 
-    // CONTADOR DE COMPETENCIA (Punto 3)
+    // CONTADOR DE COMPETENCIA
     $competitors_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id = $lead_id");
 
     $msg = '';
+    
     // PROCESO DE COMPRA (Botón Web)
     if (isset($_POST['sms_confirm_unlock']) && !$is_unlocked) {
         $balance = (int) get_user_meta($user_id, 'sms_wallet_balance', true);
         
         if ($balance >= $lead->cost_credits) {
-            // Descontar
+            // 1. Descontar saldo
             update_user_meta($user_id, 'sms_wallet_balance', $balance - $lead->cost_credits);
             
-            // Registrar
+            // 2. Registrar desbloqueo
             $wpdb->insert("{$wpdb->prefix}sms_lead_unlocks", [
                 'lead_id' => $lead_id, 
                 'provider_user_id' => $user_id
             ]);
+
+            // 3. NOTIFICAR AL CLIENTE (Nuevo requerimiento)
+            // Esta función reside en webhook.php y envía el WhatsApp/Email al cliente con los datos del proveedor
+            if (function_exists('sms_notify_client_match')) {
+                sms_notify_client_match($lead_id, $user_id);
+            }
             
-            // Recargar página para mostrar datos
+            // 4. Recargar página para mostrar datos
             echo "<script>window.location.reload();</script>"; 
             return; 
 
