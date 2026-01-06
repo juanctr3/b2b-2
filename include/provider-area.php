@@ -12,8 +12,9 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     $uid = get_current_user_id();
     global $wpdb;
 
-    // GUARDAR DATOS
+    // --- PROCESAR FORMULARIO (DATOS Y ARCHIVOS) ---
     if (isset($_POST['save_provider'])) {
+        // 1. Guardar Datos Básicos
         $code = sanitize_text_field($_POST['p_country_code']);
         $raw_phone = sanitize_text_field($_POST['p_phone_raw']);
         $new_phone = $code . $raw_phone; 
@@ -23,16 +24,38 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         update_user_meta($uid, 'sms_advisor_name', sanitize_text_field($_POST['p_advisor']));
         update_user_meta($uid, 'sms_subscribed_pages', $_POST['p_servs'] ?? []);
         
+        // 2. Notificación de cambio de teléfono
         if ($new_phone != $old_phone) {
             update_user_meta($uid, 'sms_phone_status', 'pending');
             $msg = "👋 Hola, para activar tu cuenta de proveedor, responde a este mensaje con la palabra: *ACEPTO*";
             if(function_exists('sms_send_msg')) sms_send_msg($new_phone, $msg);
             echo '<div class="woocommerce-message">✅ Número guardado. Te enviamos un WhatsApp para verificar.</div>';
+        }
+
+        // 3. Subida de Documentos (RUT / Cámara)
+        require_once(ABSPATH . 'wp-admin/includes/file.php');
+        $doc_keys = ['p_doc_rut', 'p_doc_camara'];
+        $docs_uploaded = false;
+
+        foreach($doc_keys as $key) {
+            if (!empty($_FILES[$key]['name'])) {
+                $upload = wp_handle_upload($_FILES[$key], ['test_form' => false]);
+                if (isset($upload['url'])) {
+                    update_user_meta($uid, 'sms_file_' . $key, $upload['url']);
+                    $docs_uploaded = true;
+                }
+            }
+        }
+
+        if ($docs_uploaded) {
+            update_user_meta($uid, 'sms_docs_verified', 'pending'); // Resetear a pendiente si se suben nuevos
+            echo '<div class="woocommerce-message">📂 Documentos subidos correctamente. En espera de revisión.</div>';
         } else {
             echo '<div class="woocommerce-message">✅ Perfil actualizado correctamente.</div>';
         }
     }
 
+    // --- PROCESAR SOLICITUD DE NUEVO SERVICIO ---
     if (isset($_POST['req_new_service'])) {
         $serv_name = sanitize_text_field($_POST['new_service_name']);
         if($serv_name) {
@@ -41,9 +64,9 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         }
     }
 
-    // CARGAR DATOS
+    // --- CARGAR DATOS DEL USUARIO ---
     $active_pages_ids = get_option('sms_active_service_pages', []);
-    if (!is_array($active_pages_ids)) $active_pages_ids = []; // Protección
+    if (!is_array($active_pages_ids)) $active_pages_ids = []; 
     
     $my_servs = get_user_meta($uid, 'sms_subscribed_pages', true) ?: [];
     $balance = (int) get_user_meta($uid, 'sms_wallet_balance', true);
@@ -51,7 +74,12 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     $phone_status = get_user_meta($uid, 'sms_phone_status', true);
     $full_phone = get_user_meta($uid, 'billing_phone', true);
     
-    // Parsear teléfono
+    // Datos de Verificación
+    $doc_rut = get_user_meta($uid, 'sms_file_p_doc_rut', true);
+    $doc_camara = get_user_meta($uid, 'sms_file_p_doc_camara', true);
+    $docs_status = get_user_meta($uid, 'sms_docs_verified', true);
+
+    // Parsear teléfono para mostrar en inputs
     $current_code = '+57'; $current_raw = $full_phone;
     if(strpos($full_phone, '+57')===0){ $current_code='+57'; $current_raw=substr($full_phone,3); }
     elseif(strpos($full_phone, '+52')===0){ $current_code='+52'; $current_raw=substr($full_phone,3); }
@@ -62,7 +90,7 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
 
     $view_lead_url = site_url('/oportunidad'); 
 
-    // LEADS
+    // --- CARGAR LEADS (COTIZACIONES) ---
     $leads = [];
     if (!empty($my_servs)) {
         $ids_str = implode(',', array_map('intval', $my_servs));
@@ -96,21 +124,22 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         .btn-buy { background: #f59e0b; color: white; }
         
         /* Configuración */
-        .sms-label { display: block; margin-bottom: 5px; font-weight: 600; color: #555; font-size: 13px; }
-        .sms-input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 15px; background: #f9f9f9; }
+        .sms-label { display: block; margin-bottom: 5px; font-weight: 600; color: #555; font-size: 13px; margin-top: 10px;}
+        .sms-input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 5px; background: #f9f9f9; }
         .sms-input:focus { background: #fff; border-color: #007cba; outline: none; }
         
         /* Servicios */
-        .sms-services-box { border: 1px solid #ddd; border-radius: 6px; max-height: 300px; overflow-y: auto; background: #fff; }
+        .sms-services-box { border: 1px solid #ddd; border-radius: 6px; max-height: 300px; overflow-y: auto; background: #fff; margin-bottom: 15px; }
         .sms-service-item { display: block; padding: 10px 15px; border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background 0.2s; font-size: 14px; }
         .sms-service-item:hover { background: #f0f7ff; }
         .sms-service-item input { margin-right: 10px; transform: scale(1.2); }
         .sms-sticky-search { position: sticky; top: 0; background: #fff; padding: 10px; border-bottom: 1px solid #ddd; z-index: 5; }
 
-        /* Estado Teléfono */
+        /* Estado Teléfono y Docs */
         .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase; }
         .st-verified { background: #d1fae5; color: #065f46; }
         .st-pending { background: #fee2e2; color: #991b1b; }
+        .doc-link { font-size: 11px; color: #007cba; text-decoration: none; }
     </style>
 
     <div class="sms-layout">
@@ -139,11 +168,14 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                         $ts = strtotime($l->created_at);
                         $fecha = ($ts && date('Y', $ts) > 2000) ? date('d/m/Y', $ts) : 'Hoy';
                         $views = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id = {$l->id}");
+                        
+                        // LÓGICA DE PRIVACIDAD: Ocultar nombre si no está desbloqueado
+                        $display_company = $is_unlocked ? esc_html($l->client_company ?: 'Particular') : '🔒 Empresa Confidencial';
                     ?>
                     <div class="sms-lead-card">
                         <div>
                             <div style="font-weight:700; font-size:16px; margin-bottom:4px;">
-                                <?php echo esc_html($l->client_company ?: 'Cliente Particular'); ?>
+                                <?php echo $display_company; ?>
                                 <span class="sms-badge-views">👁️ <?php echo $views; ?> interesados</span>
                             </div>
                             <div style="font-size:13px; color:#666;">
@@ -183,13 +215,14 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
             </div>
 
             <div class="sms-card">
-                <h4>⚙️ Configuración</h4>
-                <form method="post">
+                <h4>⚙️ Configuración y Verificación</h4>
+                
+                <form method="post" enctype="multipart/form-data">
                     <span class="sms-label">Nombre del Asesor (Visible al cliente)</span>
                     <input type="text" name="p_advisor" value="<?php echo esc_attr($advisor); ?>" class="sms-input" placeholder="Ej: Juan Pérez" required>
 
                     <span class="sms-label">WhatsApp de Notificaciones 
-                        <?php if($phone_status=='verified') echo '<span class="status-badge st-verified">VERIFICADO</span>'; else echo '<span class="status-badge st-pending">PENDIENTE</span>'; ?>
+                        <?php echo ($phone_status=='verified') ? '<span class="status-badge st-verified">VERIFICADO</span>' : '<span class="status-badge st-pending">PENDIENTE</span>'; ?>
                     </span>
                     
                     <div style="display:flex; gap:0; margin-bottom:15px;">
@@ -202,6 +235,25 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                         </select>
                         <input type="hidden" name="p_country_code" id="hidden_code" value="<?php echo $current_code; ?>">
                         <input type="number" name="p_phone_raw" value="<?php echo esc_attr($current_raw); ?>" class="sms-input" style="margin:0; border-radius:0 6px 6px 0;" placeholder="3001234567" required>
+                    </div>
+
+                    <div style="background:#f0f7ff; padding:10px; border-radius:6px; margin-bottom:15px; border:1px solid #cce5ff;">
+                        <h5 style="margin:0 0 5px 0; color:#0056b3;">📂 Verificación de Empresa</h5>
+                        <p style="font-size:11px; margin:0 0 10px 0; color:#555;">Sube RUT y Cámara de Comercio para generar confianza.</p>
+
+                        <?php if($docs_status == 'yes'): ?>
+                            <div style="color:green; font-weight:bold; font-size:12px; margin-bottom:5px;">✅ Documentos Aprobados</div>
+                        <?php elseif($docs_status == 'pending'): ?>
+                            <div style="color:orange; font-weight:bold; font-size:12px; margin-bottom:5px;">⏳ En Revisión</div>
+                        <?php endif; ?>
+
+                        <label class="sms-label" style="font-size:12px;">RUT (PDF/Imagen)</label>
+                        <?php if($doc_rut) echo "<a href='$doc_rut' target='_blank' class='doc-link'>Ver actual</a><br>"; ?>
+                        <input type="file" name="p_doc_rut" class="sms-input" style="font-size:12px;">
+
+                        <label class="sms-label" style="font-size:12px;">Cámara de Comercio</label>
+                        <?php if($doc_camara) echo "<a href='$doc_camara' target='_blank' class='doc-link'>Ver actual</a><br>"; ?>
+                        <input type="file" name="p_doc_camara" class="sms-input" style="font-size:12px;">
                     </div>
 
                     <span class="sms-label">Mis Servicios Suscritos</span>
