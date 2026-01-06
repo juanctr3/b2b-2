@@ -231,6 +231,16 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         </div>
 
         <div class="sms-col-side">
+            <div class="sms-col-side">
+            <div class="sms-card" style="text-align:center; border: 2px solid #007cba;">
+                <h4 style="margin-top:0;">🌐 Tu Presencia Digital</h4>
+                <p style="font-size:12px;">Así ven los clientes tu empresa:</p>
+                <a href="<?php echo site_url('/perfil-proveedor?uid='.$uid); ?>" target="_blank" class="button button-primary" style="width:100%;">👁️ Ver mi Perfil Público</a>
+            </div>
+
+            <div class="sms-card" style="background:#e8f0fe; text-align:center;">
+                
+                
             <div class="sms-card" style="background:#e8f0fe; text-align:center;">
                 <h3>💰 Saldo Disponible</h3>
                 <h2 style="color:#007cba; margin:10px 0;"><?php echo $balance; ?> Créditos</h2>
@@ -272,3 +282,4 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     </div>
     <?php
 });
+
