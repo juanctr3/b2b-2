@@ -177,6 +177,7 @@ function sms_handle_incoming_interaction($req) {
         }
 
         // --- CASO 2: COMPRA RÁPIDA ("ACEPTO 123") ---
+        // B. Compra vía WhatsApp (Ej: ACEPTO 123)
         elseif (preg_match('/^ACEPTO\s+(\d+)/i', $msg_body, $matches)) {
             $lead_id = intval($matches[1]);
             $users = get_users(['meta_query' => [['key' => 'billing_phone', 'value' => $phone_sender, 'compare' => 'LIKE']], 'number' => 1]);
@@ -185,31 +186,52 @@ function sms_handle_incoming_interaction($req) {
                 $u = $users[0];
                 $lead = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE id=$lead_id");
                 
-                if($lead && $lead->status == 'approved') {
+                // VALIDAR SI EL PROVEEDOR TIENE APROBADO EL SERVICIO ANTES DE VENDER
+                $approved_services = get_user_meta($u->ID, 'sms_approved_services', true) ?: [];
+                
+                if($lead && in_array($lead->service_page_id, $approved_services)) {
+                    
+                    // Verificamos si ya lo compró
                     $already = $wpdb->get_var("SELECT id FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id=$lead_id AND provider_user_id={$u->ID}");
                     
                     if($already) {
-                        $info = "✅ *Ya compraste este dato:*\n\n👤 {$lead->client_name}\n📞 +{$lead->client_phone}\n✉️ {$lead->client_email}";
+                        // Ya lo compró antes, reenviar datos al proveedor
+                        $info = "$e_check *Datos del Cliente:*\n\n$e_user {$lead->client_name}\n$e_phone +{$lead->client_phone}\n$e_mail {$lead->client_email}";
                         sms_send_msg($phone_sender, $info);
                     } else {
+                        // Intentar comprar (Descontar saldo)
                         $bal = (int) get_user_meta($u->ID, 'sms_wallet_balance', true);
                         if($bal >= $lead->cost_credits) {
-                            // PROCESO DE COMPRA
+                            
+                            // 1. Descontar y registrar
                             update_user_meta($u->ID, 'sms_wallet_balance', $bal - $lead->cost_credits);
                             $wpdb->insert("{$wpdb->prefix}sms_lead_unlocks", ['lead_id' => $lead_id, 'provider_user_id' => $u->ID]);
                             
-                            // 1. NOTIFICAR AL CLIENTE
-                            sms_notify_client_match($lead_id, $u->ID);
-
-                            // 2. MENSAJE AL PROVEEDOR
-                            $company_name = $lead->client_company ?: 'Particular';
-                            $info = "🎉 *Compra Exitosa*\nNuevo saldo: ".($bal - $lead->cost_credits)."\n\nDatos:\n🏢 $company_name\n👤 {$lead->client_name}\n📞 +{$lead->client_phone}\n✉️ {$lead->client_email}";
-                            
+                            // 2. Mensaje al Proveedor (Con datos del cliente)
+                            $info = "$e_party *Compra Exitosa*\nNuevo saldo: ".($bal - $lead->cost_credits)."\n\nDatos:\n$e_build ".($lead->client_company?:'Particular')."\n$e_user {$lead->client_name}\n$e_phone +{$lead->client_phone}\n$e_mail {$lead->client_email}\n$e_memo {$lead->requirement}";
                             sms_send_msg($phone_sender, $info);
+
+                            // 3. (PUNTO 3) Notificar al CLIENTE con el Nombre Real de la Empresa
+                            // Obtener nombre comercial o razón social
+                            $commercial_name = get_user_meta($u->ID, 'sms_commercial_name', true);
+                            $legal_name = get_user_meta($u->ID, 'billing_company', true);
+                            $final_name_provider = $commercial_name ?: ($legal_name ?: $u->display_name);
+                            
+                            // Datos de contacto del proveedor para el cliente
+                            $prov_phone = get_user_meta($u->ID, 'sms_whatsapp_notif', true) ?: $phone_sender;
+                            $prov_wa_link = "https://wa.me/" . str_replace('+', '', $prov_phone);
+
+                            $msg_cliente = "👋 Hola {$lead->client_name}.\n\n✅ La empresa *{$final_name_provider}* ha recibido tu solicitud y está interesada en cotizar.\n\n📞 Te contactarán pronto.\nSi deseas escribirles directamente: $prov_wa_link";
+                            
+                            // Enviar al teléfono del cliente
+                            sms_send_msg($lead->client_phone, $msg_cliente);
+
                         } else {
-                            sms_send_msg($phone_sender, "❌ Saldo insuficiente ($bal cr). Costo: {$lead->cost_credits}.");
+                            sms_send_msg($phone_sender, "$e_x Saldo insuficiente ($bal cr).");
                         }
                     }
+                } else {
+                    sms_send_msg($phone_sender, "$e_x No estás autorizado para este servicio o la cotización expiró.");
                 }
             }
         }
@@ -243,3 +265,4 @@ function sms_handle_incoming_interaction($req) {
     }
     return new WP_REST_Response('OK', 200);
 }
+
