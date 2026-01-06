@@ -148,62 +148,82 @@ function sms_tab_leads() {
     </div>
 
     <table class="widefat striped">
+        <table class="widefat striped">
         <thead>
             <tr>
                 <th>Fecha</th>
                 <th>Estado</th>
                 <th>Datos Contacto (Admin)</th>
-                <th>Servicio</th>
-                <th style="width:30%;">Edición</th>
+                <th>Servicio / Cobertura</th> <th style="width:35%;">Edición</th>
                 <th>Acciones</th>
             </tr>
         </thead>
         <tbody>
-            <?php if(empty($leads)): ?>
-                <tr><td colspan="6">No hay cotizaciones registradas.</td></tr>
-            <?php endif; ?>
-
             <?php foreach($leads as $l): 
                 $page = get_post($l->service_page_id);
                 $service_name = $page ? $page->post_title : '(General)';
-                
-                // Corrección visual de fecha
                 $ts = strtotime($l->created_at);
-                if (!$ts || date('Y', $ts) < 2000) {
-                    $fecha_display = '<span style="color:#999;">(Sin fecha)</span>';
-                } else {
-                    $fecha_display = date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $ts);
+                $fecha_display = ($ts && date('Y', $ts) > 2000) ? date_i18n(get_option('date_format'), $ts) : '<span style="color:#999">(Sin fecha)</span>';
+                
+                // --- LÓGICA PUNTO 2: CONTAR PROVEEDORES HABILITADOS ---
+                // Obtenemos todos los usuarios proveedores
+                $all_providers = get_users(['meta_key' => 'sms_approved_services', 'meta_compare' => 'EXISTS']);
+                $enabled_providers = [];
+                
+                foreach($all_providers as $prov) {
+                    $prov_services = get_user_meta($prov->ID, 'sms_approved_services', true);
+                    if (is_array($prov_services) && in_array($l->service_page_id, $prov_services)) {
+                        // Intentamos obtener el nombre comercial, si no, la razón social, si no, el nombre de usuario
+                        $com_name = get_user_meta($prov->ID, 'sms_commercial_name', true);
+                        $raz_soc = get_user_meta($prov->ID, 'billing_company', true);
+                        $enabled_providers[] = $com_name ?: ($raz_soc ?: $prov->display_name);
+                    }
                 }
+                $count_provs = count($enabled_providers);
+                // -----------------------------------------------------
             ?>
             <tr>
                 <td><?php echo $fecha_display; ?></td>
                 <td>
-                    <?php echo ($l->is_verified) ? '<span class="badge" style="color:green;">✅ Verif.</span>' : '<span class="badge" style="color:red;">❌ No Verif.</span>'; ?><br>
+                    <?php echo ($l->is_verified) ? '<span style="color:green;">✅ Verif.</span>' : '<span style="color:red;">❌ No Verif.</span>'; ?><br>
                     <strong><?php echo strtoupper($l->status); ?></strong>
                 </td>
                 <td style="background:#f0f6fc;">
                     <strong><?php echo esc_html($l->client_company); ?></strong><br>
                     👤 <?php echo esc_html($l->client_name); ?><br>
-                    📞 <a href="https://wa.me/<?php echo str_replace('+','',$l->client_phone); ?>" target="_blank"><?php echo esc_html($l->client_phone); ?></a><br>
-                    ✉️ <?php echo esc_html($l->client_email); ?><br>
-                    📍 <?php echo esc_html($l->city . ', ' . $l->country); ?>
+                    📞 <?php echo esc_html($l->client_phone); ?><br>
+                    ✉️ <?php echo esc_html($l->client_email); ?>
                 </td>
-                <td><?php echo esc_html($service_name); ?></td>
+                
+                <td>
+                    <strong><?php echo esc_html($service_name); ?></strong>
+                    <div style="margin-top:8px;">
+                        <?php if($count_provs > 0): ?>
+                            <details style="cursor:pointer;">
+                                <summary style="color:#007cba; font-weight:bold; font-size:12px;">
+                                    🏭 <?php echo $count_provs; ?> Proveedores listos
+                                </summary>
+                                <ul style="margin:5px 0 0 15px; font-size:11px; list-style:disc; color:#555;">
+                                    <?php foreach($enabled_providers as $ep): ?>
+                                        <li><?php echo esc_html($ep); ?></li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            </details>
+                        <?php else: ?>
+                            <span style="color:red; font-size:11px;">⚠️ Ningún proveedor habilitado</span>
+                        <?php endif; ?>
+                    </div>
+                </td>
                 
                 <td>
                     <form method="post" style="padding:5px;">
                         <input type="hidden" name="lead_id" value="<?php echo $l->id; ?>">
-                        <small>Editar descripción:</small>
                         <textarea name="edited_req" style="width:100%; height:60px; font-size:12px; margin-bottom:5px;"><?php echo esc_textarea($l->requirement); ?></textarea>
-                        
                         <div style="display:flex; gap:5px; align-items:center;">
                             <button type="submit" name="action_lead" value="save_edit" class="button button-small">💾 Guardar Texto</button>
-
                             <?php if($l->status == 'pending'): ?>
-                                <div style="display:flex; align-items:center; border:1px solid #ccc; padding:2px; border-radius:3px; background:#fff;">
-                                    <input type="number" name="lead_cost" value="10" style="width:45px; height:25px;" min="1">
-                                    <button type="submit" name="action_lead" value="approve" class="button button-primary button-small">Aprobar</button>
-                                </div>
+                                <input type="number" name="lead_cost" value="10" style="width:45px; height:25px;" min="1">
+                                <button type="submit" name="action_lead" value="approve" class="button button-primary button-small">Aprobar</button>
                             <?php endif; ?>
                         </div>
                     </form>
@@ -211,13 +231,9 @@ function sms_tab_leads() {
                 <td style="text-align:center;">
                     <?php if($l->status == 'approved'): ?>
                         <div style="margin-bottom:5px;"><strong><?php echo $l->cost_credits; ?></strong> cr</div>
-                        <form method="post">
-                            <input type="hidden" name="lead_id" value="<?php echo $l->id; ?>">
-                            <button type="submit" name="action_lead" value="unapprove" class="button button-small" style="color:orange;">🚫 Ocultar</button>
-                        </form>
+                        <form method="post"><input type="hidden" name="lead_id" value="<?php echo $l->id; ?>"><button type="submit" name="action_lead" value="unapprove" class="button button-small" style="color:orange;">🚫 Ocultar</button></form>
                     <?php endif; ?>
-                    
-                    <form method="post" onsubmit="return confirm('¿Borrar definitivamente?');" style="margin-top:10px;">
+                    <form method="post" onsubmit="return confirm('¿Eliminar definitivamente?');" style="margin-top:10px;">
                         <input type="hidden" name="lead_id" value="<?php echo $l->id; ?>">
                         <button type="submit" name="action_lead" value="delete" class="button button-link-delete" style="color:red; text-decoration:none;"><span class="dashicons dashicons-trash"></span></button>
                     </form>
@@ -596,3 +612,4 @@ function sms_check_order_for_credits($order_id) {
         $order->add_order_note("✅ Sistema B2B: Se añadieron $credits_to_add créditos automáticamente. Nuevo saldo: $new_balance");
     }
 }
+
