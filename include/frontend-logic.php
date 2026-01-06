@@ -281,3 +281,71 @@ function sms_handle_step2() {
         wp_send_json_error();
     }
 }
+// ============================================================
+// PERFIL PÚBLICO DEL PROVEEDOR (Shortcode)
+// ============================================================
+add_shortcode('sms_perfil_publico', 'sms_render_public_profile');
+
+function sms_render_public_profile() {
+    if (!isset($_GET['uid'])) return '<p>Perfil no especificado.</p>';
+    
+    $uid = intval($_GET['uid']);
+    $user = get_userdata($uid);
+    if (!$user) return '<p>Proveedor no encontrado.</p>';
+
+    // Obtener datos
+    $com_name = get_user_meta($uid, 'sms_commercial_name', true) ?: $user->display_name;
+    $desc = get_user_meta($uid, 'sms_company_desc', true) ?: 'Sin descripción disponible.';
+    $address = get_user_meta($uid, 'billing_address_1', true);
+    $phone = get_user_meta($uid, 'sms_whatsapp_notif', true); // WhatsApp de contacto
+    $email = get_user_meta($uid, 'billing_email', true) ?: $user->user_email;
+    $advisor = get_user_meta($uid, 'sms_advisor_name', true);
+    $doc_status = get_user_meta($uid, 'sms_docs_status', true);
+    
+    // Si no está verificado, mostrar alerta
+    if($doc_status != 'verified') {
+        return '<div style="background:#fff3cd; color:#856404; padding:15px; border-radius:5px;">⚠️ Este perfil aún está en proceso de verificación.</div>';
+    }
+
+    ob_start();
+    ?>
+    <div style="max-width:800px; margin:0 auto; font-family:sans-serif; color:#333;">
+        <div style="background:#007cba; color:#fff; padding:40px 20px; border-radius:10px 10px 0 0; text-align:center;">
+            <div style="font-size:50px; margin-bottom:10px;">🏭</div>
+            <h1 style="margin:0; font-size:28px;"><?php echo esc_html($com_name); ?></h1>
+            <p style="opacity:0.9;">Proveedor Verificado en la Plataforma</p>
+        </div>
+
+        <div style="background:#fff; border:1px solid #ddd; border-top:none; border-radius:0 0 10px 10px; padding:30px; box-shadow:0 4px 10px rgba(0,0,0,0.05);">
+            
+            <div style="margin-bottom:30px;">
+                <h3 style="border-bottom:2px solid #f0f0f0; padding-bottom:10px;">Sobre Nosotros</h3>
+                <p style="line-height:1.6; color:#555;"><?php echo nl2br(esc_html($desc)); ?></p>
+            </div>
+
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+                <div style="background:#f9f9f9; padding:20px; border-radius:8px;">
+                    <h4 style="margin-top:0;">📞 Contacto Comercial</h4>
+                    <p><strong>Asesor:</strong> <?php echo esc_html($advisor ?: 'Gerencia'); ?></p>
+                    <p><strong>WhatsApp:</strong> <a href="https://wa.me/<?php echo str_replace('+','',$phone); ?>" target="_blank" style="text-decoration:none; color:#25d366; font-weight:bold;">Chat Directo 📲</a></p>
+                    <p><strong>Email:</strong> <?php echo esc_html($email); ?></p>
+                </div>
+                
+                <div style="background:#f9f9f9; padding:20px; border-radius:8px;">
+                    <h4 style="margin-top:0;">📍 Ubicación</h4>
+                    <p><?php echo esc_html($address ?: 'Oficina Virtual / Sin dirección pública'); ?></p>
+                    <div style="margin-top:15px; color:green; font-weight:bold; font-size:12px;">
+                        ✅ Cámara de Comercio Verificada<br>
+                        ✅ RUT Verificado
+                    </div>
+                </div>
+            </div>
+
+            <div style="text-align:center; margin-top:30px;">
+                <a href="https://wa.me/<?php echo str_replace('+','',$phone); ?>" class="button" style="background:#25d366; color:#fff; padding:12px 25px; border-radius:50px; text-decoration:none; font-size:18px;">Solicitar Cotización Directa</a>
+            </div>
+        </div>
+    </div>
+    <?php
+    return ob_get_clean();
+}
