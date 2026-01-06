@@ -37,12 +37,31 @@ add_action('admin_init', function() {
 // ==========================================
 function sms_render_dashboard() {
     $tab = $_GET['tab'] ?? 'leads';
+
+    // ALERTA: Contar documentos pendientes
+    $pending_docs = get_users([
+        'meta_key' => 'sms_docs_verified',
+        'meta_value' => 'pending',
+        'fields' => 'ID'
+    ]);
+    $pending_count = count($pending_docs);
+
     ?>
     <div class="wrap">
         <h1>Gestión B2B - Centro de Control</h1>
+        
+        <?php if($pending_count > 0): ?>
+            <div class="notice notice-warning" style="border-left-color: #f0ad4e;">
+                <p><strong>⚠️ Atención Admin:</strong> Hay <strong><?php echo $pending_count; ?></strong> proveedores esperando verificación de documentos. Ve a la pestaña "Proveedores".</p>
+            </div>
+        <?php endif; ?>
+
         <h2 class="nav-tab-wrapper">
             <a href="?page=sms-b2b&tab=leads" class="nav-tab <?php echo $tab=='leads'?'nav-tab-active':''; ?>">📥 Cotizaciones</a>
-            <a href="?page=sms-b2b&tab=providers" class="nav-tab <?php echo $tab=='providers'?'nav-tab-active':''; ?>">👥 Proveedores</a>
+            <a href="?page=sms-b2b&tab=providers" class="nav-tab <?php echo $tab=='providers'?'nav-tab-active':''; ?>">
+                👥 Proveedores 
+                <?php if($pending_count > 0) echo "<span class='update-plugins count-$pending_count' style='margin-left:5px;'><span class='plugin-count'>$pending_count</span></span>"; ?>
+            </a>
             <a href="?page=sms-b2b&tab=services" class="nav-tab <?php echo $tab=='services'?'nav-tab-active':''; ?>">🔘 Botones y Servicios</a>
             <a href="?page=sms-b2b&tab=requests" class="nav-tab <?php echo $tab=='requests'?'nav-tab-active':''; ?>">🔔 Solicitudes</a>
             <a href="?page=sms-b2b&tab=config" class="nav-tab <?php echo $tab=='config'?'nav-tab-active':''; ?>">⚙️ Configuración</a>
@@ -211,7 +230,7 @@ function sms_tab_leads() {
 }
 
 // ==========================================
-// 4. PESTAÑA: PROVEEDORES (MODIFICADO PARA DOCUMENTOS)
+// 4. PESTAÑA: PROVEEDORES (GESTIÓN DOCUMENTOS Y CRÉDITOS)
 // ==========================================
 function sms_tab_providers() {
     global $wpdb;
@@ -229,14 +248,30 @@ function sms_tab_providers() {
         }
     }
 
-    // B. Procesar Acción de Verificación de Documentos
-    if (isset($_POST['toggle_doc_verify'])) {
+    // B. Procesar APROBACIÓN/RECHAZO DE DOCUMENTOS (Punto 4)
+    if (isset($_POST['doc_action'])) {
         $uid = intval($_POST['target_user_id']);
-        $curr = get_user_meta($uid, 'sms_docs_verified', true);
-        $new = ($curr == 'yes') ? 'pending' : 'yes';
-        update_user_meta($uid, 'sms_docs_verified', $new);
-        $msg = ($new == 'yes') ? '✅ Documentos aprobados. La empresa ahora es VERIFICADA.' : '⚠️ Verificación revocada.';
-        echo "<div class='notice notice-info is-dismissible'><p>$msg</p></div>";
+        $action = $_POST['doc_action'];
+        $prov_phone = get_user_meta($uid, 'billing_phone', true);
+
+        if ($action == 'approve') {
+            update_user_meta($uid, 'sms_docs_verified', 'yes');
+            
+            // Notificar al Proveedor por WhatsApp
+            if(function_exists('sms_send_msg')) {
+                sms_send_msg($prov_phone, "✅ *Documentos Aprobados*\nTu empresa ahora está verificada en la plataforma. Esto generará más confianza a los clientes.");
+            }
+            echo "<div class='notice notice-success is-dismissible'><p>✅ Documentos aprobados. Proveedor notificado por WhatsApp.</p></div>";
+        } 
+        elseif ($action == 'reject') {
+            update_user_meta($uid, 'sms_docs_verified', 'rejected');
+            
+            // Notificar al Proveedor por WhatsApp
+            if(function_exists('sms_send_msg')) {
+                sms_send_msg($prov_phone, "❌ *Documentos Rechazados*\nPor favor ingresa a tu panel, verifica que los archivos sean legibles y vuelve a subirlos (Solo PDF).");
+            }
+            echo "<div class='notice notice-error is-dismissible'><p>❌ Documentos rechazados. Proveedor notificado por WhatsApp.</p></div>";
+        }
     }
 
     $users = get_users(); 
@@ -245,10 +280,10 @@ function sms_tab_providers() {
     <table class="widefat striped">
         <thead>
             <tr>
-                <th>Proveedor / Contacto</th>
+                <th>Proveedor / Empresa</th>
                 <th>Estado WhatsApp</th>
-                <th>Documentos (Empresa)</th> <th>Servicios Inscritos</th>
-                <th>Historial de Compra</th>
+                <th>Documentos (Empresa)</th>
+                <th>Servicios Inscritos</th>
                 <th style="background:#e8f0fe; width:200px;">Gestión de Saldo</th>
             </tr>
         </thead>
@@ -257,12 +292,11 @@ function sms_tab_providers() {
                 $balance = (int) get_user_meta($u->ID, 'sms_wallet_balance', true);
                 $phone = get_user_meta($u->ID, 'billing_phone', true);
                 $advisor = get_user_meta($u->ID, 'sms_advisor_name', true);
+                $company_name = get_user_meta($u->ID, 'sms_provider_company', true);
                 $status = get_user_meta($u->ID, 'sms_phone_status', true);
                 
                 $subs = get_user_meta($u->ID, 'sms_subscribed_pages', true);
                 $serv_count = is_array($subs) ? count($subs) : 0;
-                
-                $total_unlocks = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE provider_user_id = {$u->ID}");
                 
                 // Datos de Documentos
                 $rut = get_user_meta($u->ID, 'sms_file_p_doc_rut', true);
@@ -271,10 +305,10 @@ function sms_tab_providers() {
             ?>
             <tr>
                 <td>
-                    <strong><?php echo esc_html($u->display_name); ?></strong><br>
-                    <small>📧 <?php echo $u->user_email; ?></small><br>
+                    <strong><?php echo esc_html($company_name ?: $u->display_name); ?></strong><br>
                     <small>👤 <?php echo $advisor ? $advisor : 'Sin asesor'; ?></small><br>
-                    <small>📞 <?php echo $phone ? $phone : '-'; ?></small>
+                    <small>📞 <?php echo $phone ? $phone : '-'; ?></small><br>
+                    <small>📧 <?php echo $u->user_email; ?></small>
                 </td>
                 <td>
                     <?php echo ($status=='verified') 
@@ -282,7 +316,7 @@ function sms_tab_providers() {
                         : '<span class="badge" style="background:#f8d7da; color:#721c24; padding:3px 6px; border-radius:4px;">⏳ Pendiente</span>'; 
                     ?>
                 </td>
-                <td>
+                <td style="<?php if($doc_stat=='pending') echo 'background:#fff3cd;'; ?>">
                     <?php if($rut): ?>
                         <a href="<?php echo $rut; ?>" target="_blank" class="button button-small" style="margin-bottom:2px;">📄 Ver RUT</a><br>
                     <?php endif; ?>
@@ -291,26 +325,34 @@ function sms_tab_providers() {
                         <a href="<?php echo $camara; ?>" target="_blank" class="button button-small">📄 Ver Cámara</a><br>
                     <?php endif; ?>
 
-                    <div style="margin-top:5px; font-size:11px;">
-                        Estado: <strong><?php echo ($doc_stat=='yes') ? '<span style="color:green">VERIFICADO</span>' : '<span style="color:orange">Pendiente</span>'; ?></strong>
+                    <div style="margin-top:5px; font-size:12px;">
+                        Estado: 
+                        <?php 
+                        if ($doc_stat=='yes') echo '<strong style="color:green">✅ VERIFICADO</strong>';
+                        elseif ($doc_stat=='rejected') echo '<strong style="color:red">❌ RECHAZADO</strong>';
+                        elseif ($doc_stat=='pending') echo '<strong style="color:orange">⏳ PENDIENTE</strong>';
+                        else echo '<span style="color:#999">Sin revisión</span>';
+                        ?>
                     </div>
 
                     <?php if($rut || $camara): ?>
-                        <form method="post" style="margin-top:5px;">
+                        <form method="post" style="margin-top:5px; display:flex; gap:5px;">
                             <input type="hidden" name="target_user_id" value="<?php echo $u->ID; ?>">
-                            <button type="submit" name="toggle_doc_verify" class="button button-secondary button-small">
-                                <?php echo ($doc_stat=='yes') ? '🚫 Revocar' : '✅ Aprobar Docs'; ?>
-                            </button>
+                            
+                            <?php if($doc_stat != 'yes'): ?>
+                                <button type="submit" name="doc_action" value="approve" class="button button-primary button-small">✅ Aprobar</button>
+                            <?php endif; ?>
+                            
+                            <?php if($doc_stat != 'rejected'): ?>
+                                <button type="submit" name="doc_action" value="reject" class="button button-secondary button-small" style="color:red; border-color:red;">Rechazar</button>
+                            <?php endif; ?>
                         </form>
                     <?php else: ?>
-                        <small style="color:#999;">Sin docs.</small>
+                        <small style="color:#999;">Faltan archivos.</small>
                     <?php endif; ?>
                 </td>
                 <td>
                     <strong><?php echo $serv_count; ?></strong> categorías.<br>
-                </td>
-                <td>
-                    <strong><?php echo $total_unlocks; ?></strong> leads comprados.
                 </td>
                 <td style="background:#f9f9f9; border-left:1px solid #ddd;">
                     <div style="font-size:16px; font-weight:bold; margin-bottom:5px;"><?php echo $balance; ?> Créditos</div>
