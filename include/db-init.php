@@ -33,7 +33,7 @@ function sms_install_tables() {
         PRIMARY KEY  (id)
     ) $charset_collate;";
 
-    // 3. Solicitudes de Nuevos Servicios (NUEVO)
+    // 3. Solicitudes de Nuevos Servicios
     $sql_requests = "CREATE TABLE {$wpdb->prefix}sms_service_requests (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         provider_user_id mediumint(9) NOT NULL,
