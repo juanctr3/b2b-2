@@ -211,12 +211,12 @@ function sms_tab_leads() {
 }
 
 // ==========================================
-// 4. PESTAÑA: PROVEEDORES (CRÉDITOS Y ESTADO)
+// 4. PESTAÑA: PROVEEDORES (MODIFICADO PARA DOCUMENTOS)
 // ==========================================
 function sms_tab_providers() {
     global $wpdb;
 
-    // Procesar Carga Manual
+    // A. Procesar Carga Manual de Créditos
     if (isset($_POST['manual_credit_change'])) {
         $uid = intval($_POST['target_user_id']);
         $amount = intval($_POST['credit_amount']);
@@ -229,6 +229,16 @@ function sms_tab_providers() {
         }
     }
 
+    // B. Procesar Acción de Verificación de Documentos
+    if (isset($_POST['toggle_doc_verify'])) {
+        $uid = intval($_POST['target_user_id']);
+        $curr = get_user_meta($uid, 'sms_docs_verified', true);
+        $new = ($curr == 'yes') ? 'pending' : 'yes';
+        update_user_meta($uid, 'sms_docs_verified', $new);
+        $msg = ($new == 'yes') ? '✅ Documentos aprobados. La empresa ahora es VERIFICADA.' : '⚠️ Verificación revocada.';
+        echo "<div class='notice notice-info is-dismissible'><p>$msg</p></div>";
+    }
+
     $users = get_users(); 
     ?>
     <h3>Gestión de Proveedores</h3>
@@ -237,7 +247,7 @@ function sms_tab_providers() {
             <tr>
                 <th>Proveedor / Contacto</th>
                 <th>Estado WhatsApp</th>
-                <th>Servicios Inscritos</th>
+                <th>Documentos (Empresa)</th> <th>Servicios Inscritos</th>
                 <th>Historial de Compra</th>
                 <th style="background:#e8f0fe; width:200px;">Gestión de Saldo</th>
             </tr>
@@ -253,6 +263,11 @@ function sms_tab_providers() {
                 $serv_count = is_array($subs) ? count($subs) : 0;
                 
                 $total_unlocks = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE provider_user_id = {$u->ID}");
+                
+                // Datos de Documentos
+                $rut = get_user_meta($u->ID, 'sms_file_p_doc_rut', true);
+                $camara = get_user_meta($u->ID, 'sms_file_p_doc_camara', true);
+                $doc_stat = get_user_meta($u->ID, 'sms_docs_verified', true);
             ?>
             <tr>
                 <td>
@@ -266,6 +281,30 @@ function sms_tab_providers() {
                         ? '<span class="badge" style="background:#d4edda; color:#155724; padding:3px 6px; border-radius:4px;">✅ Verificado</span>' 
                         : '<span class="badge" style="background:#f8d7da; color:#721c24; padding:3px 6px; border-radius:4px;">⏳ Pendiente</span>'; 
                     ?>
+                </td>
+                <td>
+                    <?php if($rut): ?>
+                        <a href="<?php echo $rut; ?>" target="_blank" class="button button-small" style="margin-bottom:2px;">📄 Ver RUT</a><br>
+                    <?php endif; ?>
+                    
+                    <?php if($camara): ?>
+                        <a href="<?php echo $camara; ?>" target="_blank" class="button button-small">📄 Ver Cámara</a><br>
+                    <?php endif; ?>
+
+                    <div style="margin-top:5px; font-size:11px;">
+                        Estado: <strong><?php echo ($doc_stat=='yes') ? '<span style="color:green">VERIFICADO</span>' : '<span style="color:orange">Pendiente</span>'; ?></strong>
+                    </div>
+
+                    <?php if($rut || $camara): ?>
+                        <form method="post" style="margin-top:5px;">
+                            <input type="hidden" name="target_user_id" value="<?php echo $u->ID; ?>">
+                            <button type="submit" name="toggle_doc_verify" class="button button-secondary button-small">
+                                <?php echo ($doc_stat=='yes') ? '🚫 Revocar' : '✅ Aprobar Docs'; ?>
+                            </button>
+                        </form>
+                    <?php else: ?>
+                        <small style="color:#999;">Sin docs.</small>
+                    <?php endif; ?>
                 </td>
                 <td>
                     <strong><?php echo $serv_count; ?></strong> categorías.<br>
@@ -290,7 +329,7 @@ function sms_tab_providers() {
 }
 
 // ==========================================
-// 5. PESTAÑA: BOTONES Y SERVICIOS (PROTEGIDO)
+// 5. PESTAÑA: BOTONES Y SERVICIOS
 // ==========================================
 function sms_tab_services() {
     if(isset($_POST['save_config'])) {
@@ -303,7 +342,6 @@ function sms_tab_services() {
             
             for($i=0; $i < count($labels); $i++){
                 if(!empty(trim($labels[$i]))){
-                    // Validación fuerte de array para evitar error crítico
                     $pgs = isset($page_groups[$i]) ? $page_groups[$i] : [];
                     if(!is_array($pgs)) $pgs = [];
                     
@@ -320,7 +358,6 @@ function sms_tab_services() {
 
     $all_pages = get_pages(['post_status' => 'publish']);
     
-    // Recuperar y validar opciones
     $active = get_option('sms_active_service_pages', []);
     if (!is_array($active)) $active = [];
 
@@ -370,13 +407,12 @@ function sms_tab_services() {
     <script>
         document.getElementById('add_btn_row').addEventListener('click', function(){
             var w = document.getElementById('buttons_wrapper');
-            // Clonamos el primero como plantilla, limpiando valores
             if(w.children.length > 0) {
                 var c = w.children[0].cloneNode(true);
                 var i = w.children.length;
                 c.querySelector('input').value = '';
                 var sel = c.querySelector('select');
-                sel.name = 'btn_pages_ids['+i+'][]'; // Ajustar índice del array
+                sel.name = 'btn_pages_ids['+i+'][]';
                 var o = sel.options;
                 for(var k=0; k<o.length; k++) o[k].selected = false;
                 w.appendChild(c);
