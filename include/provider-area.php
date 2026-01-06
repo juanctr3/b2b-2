@@ -12,314 +12,263 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     $uid = get_current_user_id();
     global $wpdb;
 
-    // --- PROCESAR FORMULARIO (DATOS Y ARCHIVOS) ---
-    if (isset($_POST['save_provider'])) {
-        // 1. Guardar Datos Básicos
-        $code = sanitize_text_field($_POST['p_country_code']);
-        $raw_phone = sanitize_text_field($_POST['p_phone_raw']);
-        $new_phone = $code . $raw_phone; 
-        $old_phone = get_user_meta($uid, 'billing_phone', true);
-
-        update_user_meta($uid, 'billing_phone', $new_phone);
-        update_user_meta($uid, 'sms_advisor_name', sanitize_text_field($_POST['p_advisor']));
-        // NUEVO: Guardar Nombre de Empresa del Proveedor
-        update_user_meta($uid, 'sms_provider_company', sanitize_text_field($_POST['p_company_name']));
-        update_user_meta($uid, 'sms_subscribed_pages', $_POST['p_servs'] ?? []);
+    // A. GUARDAR PERFIL COMPLETO (Punto 4)
+    if (isset($_POST['save_provider_profile'])) {
+        // Datos Básicos
+        update_user_meta($uid, 'billing_company', sanitize_text_field($_POST['p_razon_social'])); // Razón Social
+        update_user_meta($uid, 'sms_commercial_name', sanitize_text_field($_POST['p_commercial_name'])); // Nombre Comercial
+        update_user_meta($uid, 'sms_nit', sanitize_text_field($_POST['p_nit']));
         
-        // 2. Notificación de cambio de teléfono
-        if ($new_phone != $old_phone) {
-            update_user_meta($uid, 'sms_phone_status', 'pending');
-            $msg = "👋 Hola, para activar tu cuenta de proveedor, responde a este mensaje con la palabra: *ACEPTO*";
-            if(function_exists('sms_send_msg')) sms_send_msg($new_phone, $msg);
-            echo '<div class="woocommerce-message">✅ Número guardado. Te enviamos un WhatsApp para verificar.</div>';
+        // Contacto
+        update_user_meta($uid, 'billing_address_1', sanitize_text_field($_POST['p_address']));
+        update_user_meta($uid, 'billing_phone', sanitize_text_field($_POST['p_phone']));
+        update_user_meta($uid, 'sms_whatsapp_notif', sanitize_text_field($_POST['p_whatsapp']));
+        update_user_meta($uid, 'billing_email', sanitize_email($_POST['p_email']));
+        
+        // Detalles
+        update_user_meta($uid, 'sms_advisor_name', sanitize_text_field($_POST['p_advisor']));
+        update_user_meta($uid, 'sms_company_desc', sanitize_textarea_field($_POST['p_desc']));
+
+        // Servicios
+        $requested_pages = $_POST['p_servs'] ?? [];
+        update_user_meta($uid, 'sms_requested_services', $requested_pages);
+        
+        // Asegurar array de aprobados
+        if(!get_user_meta($uid, 'sms_approved_services', true)) {
+            update_user_meta($uid, 'sms_approved_services', []);
         }
 
-        // 3. Subida de Documentos (SOLO PDF)
-        require_once(ABSPATH . 'wp-admin/includes/file.php');
-        $doc_keys = ['p_doc_rut', 'p_doc_camara'];
-        $docs_uploaded = false;
-        $error_pdf = false;
-
-        foreach($doc_keys as $key) {
-            if (!empty($_FILES[$key]['name'])) {
-                // VALIDACIÓN EXTENSIÓN Y MIME
-                $file_type = wp_check_filetype($_FILES[$key]['name']);
-                if ($file_type['ext'] !== 'pdf' && $_FILES[$key]['type'] !== 'application/pdf') {
-                    $error_pdf = true;
-                    continue; // Saltar este archivo
-                }
-
-                $upload = wp_handle_upload($_FILES[$key], ['test_form' => false]);
-                if (isset($upload['url'])) {
-                    update_user_meta($uid, 'sms_file_' . $key, $upload['url']);
-                    $docs_uploaded = true;
-                }
-            }
-        }
-
-        if ($error_pdf) {
-             echo '<div class="woocommerce-error">❌ Error: Solo se permiten archivos PDF.</div>';
-        }
-
-        if ($docs_uploaded) {
-            update_user_meta($uid, 'sms_docs_verified', 'pending'); // Resetear a pendiente
-            
-            // NOTIFICAR AL ADMIN (Punto 3)
-            $admin_phone = get_option('sms_admin_phone');
-            $prov_name = get_user_meta($uid, 'sms_provider_company', true) ?: 'Proveedor #'.$uid;
-            
-            if($admin_phone && function_exists('sms_send_msg')) {
-                sms_send_msg($admin_phone, "📂 *Alerta Admin*\nEl proveedor *$prov_name* ha subido nuevos documentos PDF. Entra al plugin para verificar.");
-            }
-
-            echo '<div class="woocommerce-message">📂 Documentos PDF subidos. El administrador ha sido notificado.</div>';
-        } elseif (!$error_pdf) {
-            echo '<div class="woocommerce-message">✅ Perfil actualizado correctamente.</div>';
-        }
+        echo '<div class="woocommerce-message">✅ Perfil de empresa actualizado correctamente.</div>';
     }
 
-    // --- PROCESAR SOLICITUD DE NUEVO SERVICIO ---
+    // B. SOLICITUD SERVICIO
     if (isset($_POST['req_new_service'])) {
         $serv_name = sanitize_text_field($_POST['new_service_name']);
         if($serv_name) {
-            $wpdb->insert("{$wpdb->prefix}sms_service_requests", ['provider_user_id' => $uid, 'requested_service' => $serv_name]);
-            echo '<div class="woocommerce-message">✅ Solicitud enviada.</div>';
+            $exists = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$wpdb->prefix}sms_service_requests WHERE provider_user_id = %d AND requested_service = %s", $uid, $serv_name));
+            if(!$exists) {
+                $wpdb->insert("{$wpdb->prefix}sms_service_requests", ['provider_user_id' => $uid, 'requested_service' => $serv_name]);
+                echo '<div class="woocommerce-message">✅ Solicitud enviada.</div>';
+            }
         }
     }
 
-    // --- CARGAR DATOS DEL USUARIO ---
+    // C. CARGA DE DOCUMENTOS
+    // PUNTO 1: Solo permitimos subir si NO está verificado.
+    $docs_status = get_user_meta($uid, 'sms_docs_status', true);
+    
+    if (isset($_FILES['p_docs']) && $docs_status != 'verified') {
+        require_once(ABSPATH . 'wp-admin/includes/file.php');
+        $files = $_FILES['p_docs'];
+        $uploaded_count = 0;
+        
+        foreach ($files['name'] as $key => $value) {
+            if ($files['name'][$key]) {
+                $file = [
+                    'name'     => $files['name'][$key],
+                    'type'     => $files['type'][$key],
+                    'tmp_name' => $files['tmp_name'][$key],
+                    'error'    => $files['error'][$key],
+                    'size'     => $files['size'][$key]
+                ];
+                $upload = wp_handle_upload($file, ['test_form' => false]);
+                if (!isset($upload['error']) && isset($upload['url'])) {
+                    $current_docs = get_user_meta($uid, 'sms_company_docs', true) ?: [];
+                    $current_docs[] = $upload['url'];
+                    update_user_meta($uid, 'sms_company_docs', $current_docs);
+                    $uploaded_count++;
+                }
+            }
+        }
+
+        if ($uploaded_count > 0) {
+            update_user_meta($uid, 'sms_docs_status', 'pending');
+            // Notificar Admin (código resumido)
+            $admin_email = get_option('admin_email');
+            wp_mail($admin_email, "Docs Subidos", "Proveedor ID $uid subió documentos.");
+            echo "<script>window.location.href = '" . wc_get_account_endpoint_url('zona-proveedor') . "?docs_uploaded=1';</script>";
+            exit;
+        }
+    }
+
+    if(isset($_GET['docs_uploaded'])) echo '<div class="woocommerce-message">✅ Documentos enviados.</div>';
+
+    // DATOS DE LECTURA
     $active_pages_ids = get_option('sms_active_service_pages', []);
-    if (!is_array($active_pages_ids)) $active_pages_ids = []; 
-    
-    $my_servs = get_user_meta($uid, 'sms_subscribed_pages', true) ?: [];
+    $approved_servs = get_user_meta($uid, 'sms_approved_services', true) ?: [];
+    $requested_servs = get_user_meta($uid, 'sms_requested_services', true) ?: [];
     $balance = (int) get_user_meta($uid, 'sms_wallet_balance', true);
-    $advisor = get_user_meta($uid, 'sms_advisor_name', true);
-    $company_name = get_user_meta($uid, 'sms_provider_company', true); // Nuevo dato
-    $phone_status = get_user_meta($uid, 'sms_phone_status', true);
-    $full_phone = get_user_meta($uid, 'billing_phone', true);
-    
-    // Datos de Verificación
-    $doc_rut = get_user_meta($uid, 'sms_file_p_doc_rut', true);
-    $doc_camara = get_user_meta($uid, 'sms_file_p_doc_camara', true);
-    $docs_status = get_user_meta($uid, 'sms_docs_verified', true);
+    $docs_urls = get_user_meta($uid, 'sms_company_docs', true) ?: [];
 
-    // Parsear teléfono
-    $current_code = '+57'; $current_raw = $full_phone;
-    if(strpos($full_phone, '+57')===0){ $current_code='+57'; $current_raw=substr($full_phone,3); }
-    elseif(strpos($full_phone, '+52')===0){ $current_code='+52'; $current_raw=substr($full_phone,3); }
-    elseif(strpos($full_phone, '+51')===0){ $current_code='+51'; $current_raw=substr($full_phone,3); }
-    elseif(strpos($full_phone, '+34')===0){ $current_code='+34'; $current_raw=substr($full_phone,3); }
-    elseif(strpos($full_phone, '+1')===0){ $current_code='+1'; $current_raw=substr($full_phone,2); }
-    elseif(strpos($full_phone, '+')===0){ $current_code='+'.substr($full_phone,1,2); $current_raw=substr($full_phone,3); }
+    // OBTENER DATOS DE PERFIL PARA EL FORMULARIO
+    $p_razon = get_user_meta($uid, 'billing_company', true);
+    $p_comercial = get_user_meta($uid, 'sms_commercial_name', true);
+    $p_nit = get_user_meta($uid, 'sms_nit', true);
+    $p_address = get_user_meta($uid, 'billing_address_1', true);
+    $p_phone = get_user_meta($uid, 'billing_phone', true);
+    $p_whatsapp = get_user_meta($uid, 'sms_whatsapp_notif', true);
+    $p_email = get_user_meta($uid, 'billing_email', true) ?: wp_get_current_user()->user_email;
+    $p_advisor = get_user_meta($uid, 'sms_advisor_name', true);
+    $p_desc = get_user_meta($uid, 'sms_company_desc', true);
 
-    $view_lead_url = site_url('/oportunidad'); 
-
-    // --- CARGAR LEADS ---
+    // OBTENER LEADS
     $leads = [];
-    if (!empty($my_servs)) {
-        $ids_str = implode(',', array_map('intval', $my_servs));
+    if (!empty($approved_servs)) {
+        $ids_str = implode(',', array_map('intval', $approved_servs));
         $leads = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}sms_leads WHERE service_page_id IN ($ids_str) AND status = 'approved' ORDER BY created_at DESC LIMIT 50");
     }
-    $my_unlocks = $wpdb->get_col("SELECT lead_id FROM {$wpdb->prefix}sms_lead_unlocks WHERE provider_user_id = $uid");
-
+    
+    // ESTILOS Y UI
     ?>
     <style>
-        .sms-layout { display: flex; flex-wrap: wrap; gap: 25px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif; }
-        .sms-col-main { flex: 2; min-width: 300px; }
-        .sms-col-side { flex: 1; min-width: 280px; }
-        
-        .sms-card { background: #fff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 1px solid #f0f0f0; padding: 25px; margin-bottom: 25px; transition: transform 0.2s; }
-        .sms-card:hover { border-color: #e0e0e0; }
-        .sms-card h3, .sms-card h4 { margin-top: 0; color: #2c3e50; font-weight: 700; }
-        
-        /* Billetera */
-        .sms-wallet { background: linear-gradient(135deg, #007cba 0%, #005a8c 100%); color: white; text-align: center; }
-        .sms-wallet h3 { color: white; opacity: 0.9; font-weight: 400; font-size: 16px; margin-bottom: 5px; }
-        .sms-balance { font-size: 38px; font-weight: 800; margin: 0; line-height: 1.2; }
-        .sms-btn-recharge { background: #ffc107; color: #333; font-weight: bold; padding: 10px 20px; border-radius: 50px; text-decoration: none; display: inline-block; margin-top: 15px; transition: all 0.3s; border: none; cursor: pointer; }
-        .sms-btn-recharge:hover { background: #ffca2c; transform: translateY(-2px); color: #000; }
-
-        /* Leads */
-        .sms-lead-card { border: 1px solid #eee; border-radius: 8px; padding: 15px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; background: #fff; transition: background 0.2s; }
-        .sms-lead-card:hover { background: #f9fbfd; border-color: #dbeafe; }
-        .sms-badge-views { font-size: 11px; background: #e2e8f0; color: #475569; padding: 3px 8px; border-radius: 10px; margin-left: 5px; }
-        .sms-btn-action { padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; text-decoration: none; display: inline-block; }
-        .btn-unlock { background: #10b981; color: white; }
-        .btn-buy { background: #f59e0b; color: white; }
-        
-        /* Configuración */
-        .sms-label { display: block; margin-bottom: 5px; font-weight: 600; color: #555; font-size: 13px; margin-top: 10px;}
-        .sms-input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 5px; background: #f9f9f9; }
-        .sms-input:focus { background: #fff; border-color: #007cba; outline: none; }
-        
-        /* Servicios */
-        .sms-services-box { border: 1px solid #ddd; border-radius: 6px; max-height: 300px; overflow-y: auto; background: #fff; margin-bottom: 15px; }
-        .sms-service-item { display: block; padding: 10px 15px; border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background 0.2s; font-size: 14px; }
-        .sms-service-item:hover { background: #f0f7ff; }
-        .sms-service-item input { margin-right: 10px; transform: scale(1.2); }
-        .sms-sticky-search { position: sticky; top: 0; background: #fff; padding: 10px; border-bottom: 1px solid #ddd; z-index: 5; }
-
-        /* Estado Teléfono y Docs */
-        .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase; }
-        .st-verified { background: #d1fae5; color: #065f46; }
-        .st-pending { background: #fee2e2; color: #991b1b; }
-        .doc-link { font-size: 11px; color: #007cba; text-decoration: none; }
+        .sms-layout { display: flex; flex-wrap: wrap; gap: 25px; } 
+        .sms-col-main { flex: 2; min-width: 300px; } 
+        .sms-col-side { flex: 1; min-width: 280px; } 
+        .sms-card { background: #fff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); padding: 25px; margin-bottom: 25px; border:1px solid #eee; }
+        .sms-input-group { margin-bottom: 15px; }
+        .sms-input-group label { display: block; font-weight: bold; font-size: 12px; margin-bottom: 5px; }
+        .sms-input-group input, .sms-input-group textarea { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        .row-2-col { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
     </style>
 
     <div class="sms-layout">
         <div class="sms-col-main">
-            <h3>📋 Oportunidades Disponibles</h3>
-            
-            <?php if($phone_status != 'verified'): ?>
-                <div style="background:#fff3cd; border:1px solid #ffeeba; color:#856404; padding:15px; border-radius:8px; margin-bottom:20px;">
-                    🚨 <strong>Tu WhatsApp no está verificado.</strong><br>
-                    No recibirás notificaciones. Te hemos enviado un mensaje, por favor responde <strong>ACEPTO</strong>.
+            <h3>📋 Tablero de Oportunidades</h3>
+            <?php if(empty($approved_servs)): ?>
+                <div class="sms-card" style="border-left: 5px solid orange;">
+                    <p>⚠️ <strong>Perfil Incompleto:</strong> Configura tus servicios y completa tus datos de empresa para ver cotizaciones.</p>
+                </div>
+            <?php elseif(empty($leads)): ?>
+                <div class="sms-card"><p>No hay cotizaciones activas en tus categorías.</p></div>
+            <?php else: ?>
+                <div class="sms-card">
+                <?php foreach($leads as $l): ?>
+                    <div style="border-bottom:1px solid #eee; padding:15px 0;">
+                        <div style="display:flex; justify-content:space-between;">
+                            <strong><?php echo $l->client_company?:'Particular'; ?></strong>
+                            <span style="color:green; font-weight:bold;"><?php echo $l->cost_credits; ?> cr</span>
+                        </div>
+                        <span style="font-size:12px; color:#666;">📍 <?php echo $l->city; ?></span>
+                        <p style="margin:5px 0;"><?php echo wp_trim_words($l->requirement, 15); ?></p>
+                        <a href="<?php echo site_url('/oportunidad?lid='.$l->id); ?>" class="button button-primary button-small">Ver Detalles y Contactar</a>
+                    </div>
+                <?php endforeach; ?>
                 </div>
             <?php endif; ?>
 
-            <?php if (empty($my_servs)): ?>
-                <div class="sms-card" style="text-align:center; padding:40px;">
-                    <p style="font-size:16px; color:#666;">Selecciona tus servicios en el panel derecho para empezar a ver cotizaciones.</p>
-                </div>
-            <?php elseif (empty($leads)): ?>
-                <div class="sms-card" style="text-align:center;">
-                    <p>No hay cotizaciones activas para tus categorías en este momento.</p>
-                </div>
-            <?php else: ?>
-                <div class="sms-card" style="padding:15px;">
-                    <?php foreach ($leads as $l): 
-                        $is_unlocked = in_array($l->id, $my_unlocks);
-                        $ts = strtotime($l->created_at);
-                        $fecha = ($ts && date('Y', $ts) > 2000) ? date('d/m/Y', $ts) : 'Hoy';
-                        $views = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id = {$l->id}");
-                        
-                        $display_company = $is_unlocked ? esc_html($l->client_company ?: 'Particular') : '🔒 Empresa Confidencial';
-                    ?>
-                    <div class="sms-lead-card">
-                        <div>
-                            <div style="font-weight:700; font-size:16px; margin-bottom:4px;">
-                                <?php echo $display_company; ?>
-                                <span class="sms-badge-views">👁️ <?php echo $views; ?> interesados</span>
-                            </div>
-                            <div style="font-size:13px; color:#666;">
-                                📅 <?php echo $fecha; ?> &nbsp;|&nbsp; 📍 <?php echo esc_html($l->city); ?>
-                            </div>
-                            <div style="font-size:14px; color:#444; margin-top:5px;">
-                                📝 "<?php echo wp_trim_words($l->requirement, 12); ?>"
-                            </div>
+            <div class="sms-card">
+                <h3>🏢 Perfil de Empresa (Público para Clientes)</h3>
+                <form method="post">
+                    <div class="row-2-col">
+                        <div class="sms-input-group">
+                            <label>Razón Social (Cámara de Comercio)</label>
+                            <input type="text" name="p_razon_social" value="<?php echo esc_attr($p_razon); ?>" required>
                         </div>
-                        <div style="text-align:right; min-width:120px;">
-                            <?php if ($is_unlocked): ?>
-                                <a href="<?php echo $view_lead_url . '?lid=' . $l->id; ?>" class="sms-btn-action btn-unlock">👁️ VER DATOS</a>
-                            <?php else: ?>
-                                <a href="<?php echo $view_lead_url . '?lid=' . $l->id; ?>" class="sms-btn-action btn-buy">🔓 <?php echo $l->cost_credits; ?> CR</a>
-                            <?php endif; ?>
+                        <div class="sms-input-group">
+                            <label>NIT / Identificación Fiscal</label>
+                            <input type="text" name="p_nit" value="<?php echo esc_attr($p_nit); ?>" required>
                         </div>
                     </div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-            
-            <div class="sms-card" style="background:#f8f9fa; border:none;">
-                <h4>¿No encuentras tu categoría?</h4>
-                <form method="post" style="display:flex; gap:10px;">
-                    <input type="text" name="new_service_name" class="sms-input" style="margin:0;" placeholder="Ej: Reparación de Drones" required>
-                    <button type="submit" name="req_new_service" class="button">Solicitar</button>
+
+                    <div class="sms-input-group">
+                        <label>Nombre Comercial (Marca visible al cliente)</label>
+                        <input type="text" name="p_commercial_name" value="<?php echo esc_attr($p_comercial); ?>" placeholder="Ej: Soluciones Rápidas SAS" required>
+                    </div>
+
+                    <div class="row-2-col">
+                         <div class="sms-input-group">
+                            <label>Dirección Física</label>
+                            <input type="text" name="p_address" value="<?php echo esc_attr($p_address); ?>">
+                        </div>
+                        <div class="sms-input-group">
+                            <label>Email Contacto</label>
+                            <input type="email" name="p_email" value="<?php echo esc_attr($p_email); ?>">
+                        </div>
+                    </div>
+
+                    <div class="row-2-col">
+                         <div class="sms-input-group">
+                            <label>Teléfono Fijo / PBX</label>
+                            <input type="text" name="p_phone" value="<?php echo esc_attr($p_phone); ?>">
+                        </div>
+                        <div class="sms-input-group">
+                            <label>WhatsApp (Notificaciones y Clientes)</label>
+                            <input type="text" name="p_whatsapp" value="<?php echo esc_attr($p_whatsapp); ?>" placeholder="+57300..." required>
+                        </div>
+                    </div>
+
+                    <div class="sms-input-group">
+                        <label>Nombre Asesor Encargado</label>
+                        <input type="text" name="p_advisor" value="<?php echo esc_attr($p_advisor); ?>">
+                    </div>
+
+                    <div class="sms-input-group">
+                        <label>Descripción de la Empresa (Servicios, experiencia...)</label>
+                        <textarea name="p_desc" rows="3"><?php echo esc_textarea($p_desc); ?></textarea>
+                    </div>
+
+                    <hr>
+                    <h4>⚙️ Configuración de Servicios</h4>
+                    <div style="height:150px; overflow-y:scroll; border:1px solid #eee; padding:10px; margin-bottom:15px; background:#f9f9f9;">
+                        <?php foreach($active_pages_ids as $pid): 
+                            $p = get_post($pid); if(!$p) continue;
+                            $is_requested = in_array($pid, $requested_servs);
+                            $is_approved = in_array($pid, $approved_servs);
+                        ?>
+                        <label style="display:block; font-size:12px; margin-bottom:5px;">
+                            <input type="checkbox" name="p_servs[]" value="<?php echo $pid; ?>" <?php checked($is_requested); ?>>
+                            <?php echo $p->post_title; ?>
+                            <?php if($is_approved): ?> <span style="color:green; font-weight:bold;">(✅ Aprobado)</span>
+                            <?php elseif($is_requested): ?> <span style="color:orange;">(⏳ Pendiente)</span>
+                            <?php endif; ?>
+                        </label>
+                        <?php endforeach; ?>
+                    </div>
+
+                    <button type="submit" name="save_provider_profile" class="button button-primary" style="width:100%;">💾 Guardar Perfil Completo</button>
                 </form>
             </div>
         </div>
 
         <div class="sms-col-side">
-            <div class="sms-card sms-wallet">
-                <h3>💰 Tu Saldo Disponible</h3>
-                <p class="sms-balance"><?php echo $balance; ?></p>
-                <small>Créditos</small><br>
-                <a href="/tienda" class="sms-btn-recharge">Recargar Ahora</a>
+            <div class="sms-card" style="background:#e8f0fe; text-align:center;">
+                <h3>💰 Saldo Disponible</h3>
+                <h2 style="color:#007cba; margin:10px 0;"><?php echo $balance; ?> Créditos</h2>
+                <a href="/tienda" class="button">Recargar Saldo</a>
             </div>
 
             <div class="sms-card">
-                <h4>⚙️ Configuración y Verificación</h4>
+                <h4>📂 Documentación Legal</h4>
+                <p style="font-size:12px;">Requisito: RUT y Cámara de Comercio vigentes.</p>
                 
-                <form method="post" enctype="multipart/form-data">
-                    <span class="sms-label">Nombre Comercial de la Empresa</span>
-                    <input type="text" name="p_company_name" value="<?php echo esc_attr($company_name); ?>" class="sms-input" placeholder="Ej: Soluciones SAS" required>
-
-                    <span class="sms-label">Nombre del Asesor</span>
-                    <input type="text" name="p_advisor" value="<?php echo esc_attr($advisor); ?>" class="sms-input" placeholder="Ej: Juan Pérez" required>
-
-                    <span class="sms-label">WhatsApp de Notificaciones 
-                        <?php echo ($phone_status=='verified') ? '<span class="status-badge st-verified">VERIFICADO</span>' : '<span class="status-badge st-pending">PENDIENTE</span>'; ?>
-                    </span>
+                <?php if($docs_status == 'verified'): ?>
+                    <div style="color:green; background:#d4edda; padding:10px; border-radius:5px; border:1px solid #c3e6cb;">
+                        <strong>✅ Documentación Aprobada</strong>
+                        <p style="font-size:11px; margin:5px 0;">Sus documentos han sido validados. Para actualizar, contacte a soporte.</p>
+                    </div>
+                <?php else: ?>
                     
-                    <div style="display:flex; gap:0; margin-bottom:15px;">
-                        <select id="p_country_select" class="sms-input" style="width:110px; margin:0; border-radius:6px 0 0 6px; border-right:none; background:#eee;" onchange="updateCountryCode()">
-                            <option value="+57" <?php selected($current_code, '+57'); ?>>🇨🇴 +57</option>
-                            <option value="+52" <?php selected($current_code, '+52'); ?>>🇲🇽 +52</option>
-                            <option value="+51" <?php selected($current_code, '+51'); ?>>🇵🇪 +51</option>
-                            <option value="+34" <?php selected($current_code, '+34'); ?>>🇪🇸 +34</option>
-                            <option value="+1" <?php selected($current_code, '+1'); ?>>🇺🇸 +1</option>
-                        </select>
-                        <input type="hidden" name="p_country_code" id="hidden_code" value="<?php echo $current_code; ?>">
-                        <input type="number" name="p_phone_raw" value="<?php echo esc_attr($current_raw); ?>" class="sms-input" style="margin:0; border-radius:0 6px 6px 0;" placeholder="3001234567" required>
-                    </div>
+                    <?php if($docs_status == 'pending'): ?>
+                        <div style="color:#856404; background:#fff3cd; padding:10px; border-radius:5px; margin-bottom:10px;">⏳ En Revisión por Admin</div>
+                    <?php endif; ?>
 
-                    <div style="background:#f0f7ff; padding:10px; border-radius:6px; margin-bottom:15px; border:1px solid #cce5ff;">
-                        <h5 style="margin:0 0 5px 0; color:#0056b3;">📂 Verificación de Empresa</h5>
-                        <p style="font-size:11px; margin:0 0 10px 0; color:#555;">Sube RUT y Cámara de Comercio (Solo PDF).</p>
+                    <form method="post" enctype="multipart/form-data">
+                        <input type="file" name="p_docs[]" multiple accept=".pdf,.jpg,.png" style="font-size:12px; margin-bottom:10px;">
+                        <button type="submit" class="button button-small">📤 Subir Archivos</button>
+                    </form>
 
-                        <?php if($docs_status == 'yes'): ?>
-                            <div style="color:green; font-weight:bold; font-size:14px; margin-bottom:5px; background:#d4edda; padding:5px; text-align:center; border-radius:4px;">✅ VERIFICADO</div>
-                        <?php elseif($docs_status == 'rejected'): ?>
-                            <div style="color:red; font-weight:bold; font-size:12px; margin-bottom:5px;">❌ Documentos Rechazados. Sube nuevamente.</div>
-                        <?php elseif($docs_status == 'pending'): ?>
-                            <div style="color:orange; font-weight:bold; font-size:12px; margin-bottom:5px;">⏳ En Revisión</div>
-                        <?php endif; ?>
+                <?php endif; ?>
 
-                        <label class="sms-label" style="font-size:12px;">RUT (PDF)</label>
-                        <?php if($doc_rut) echo "<a href='$doc_rut' target='_blank' class='doc-link'>Ver actual</a><br>"; ?>
-                        <input type="file" name="p_doc_rut" class="sms-input" style="font-size:12px;" accept="application/pdf">
-
-                        <label class="sms-label" style="font-size:12px;">Cámara de Comercio (PDF)</label>
-                        <?php if($doc_camara) echo "<a href='$doc_camara' target='_blank' class='doc-link'>Ver actual</a><br>"; ?>
-                        <input type="file" name="p_doc_camara" class="sms-input" style="font-size:12px;" accept="application/pdf">
-                    </div>
-
-                    <span class="sms-label">Mis Servicios Suscritos</span>
-                    <div class="sms-services-box">
-                        <div class="sms-sticky-search">
-                            <input type="text" id="servSearch" class="sms-input" style="margin:0; padding:8px;" placeholder="🔍 Buscar servicio...">
+                <div class="doc-list" style="margin-top:15px;">
+                    <?php if(!empty($docs_urls)): foreach($docs_urls as $idx => $url): ?>
+                        <div style="background:#f1f1f1; padding:5px; margin-bottom:3px; font-size:11px; display:flex; justify-content:space-between;">
+                            <span>Doc #<?php echo $idx+1; ?></span>
+                            <a href="<?php echo $url; ?>" target="_blank">Ver</a>
                         </div>
-                        <div id="servList">
-                            <?php if(!empty($active_pages_ids)): foreach($active_pages_ids as $pid): 
-                                $p = get_post($pid); if(!$p) continue;
-                            ?>
-                            <label class="sms-service-item serv-item">
-                                <input type="checkbox" name="p_servs[]" value="<?php echo $pid; ?>" <?php echo in_array($pid, $my_servs) ? 'checked' : ''; ?>>
-                                <span><?php echo $p->post_title; ?></span>
-                            </label>
-                            <?php endforeach; else: ?>
-                                <div style="padding:10px; font-size:12px; color:red;">No hay servicios habilitados por el admin.</div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <button type="submit" name="save_provider" class="button button-primary" style="width:100%; margin-top:20px; font-size:16px; padding:10px;">💾 Guardar Cambios</button>
-                </form>
+                    <?php endforeach; endif; ?>
+                </div>
             </div>
         </div>
     </div>
-
-    <script>
-        function updateCountryCode() {
-            document.getElementById('hidden_code').value = document.getElementById('p_country_select').value;
-        }
-        document.getElementById('servSearch').addEventListener('keyup', function() {
-            var val = this.value.toLowerCase();
-            document.querySelectorAll('.serv-item').forEach(function(item) {
-                var text = item.querySelector('span').innerText.toLowerCase();
-                item.style.display = text.indexOf(val) > -1 ? 'block' : 'none';
-            });
-        });
-    </script>
     <?php
 });
