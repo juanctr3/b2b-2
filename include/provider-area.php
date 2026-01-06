@@ -22,6 +22,8 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
 
         update_user_meta($uid, 'billing_phone', $new_phone);
         update_user_meta($uid, 'sms_advisor_name', sanitize_text_field($_POST['p_advisor']));
+        // NUEVO: Guardar Nombre de Empresa del Proveedor
+        update_user_meta($uid, 'sms_provider_company', sanitize_text_field($_POST['p_company_name']));
         update_user_meta($uid, 'sms_subscribed_pages', $_POST['p_servs'] ?? []);
         
         // 2. Notificación de cambio de teléfono
@@ -32,13 +34,21 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
             echo '<div class="woocommerce-message">✅ Número guardado. Te enviamos un WhatsApp para verificar.</div>';
         }
 
-        // 3. Subida de Documentos (RUT / Cámara)
+        // 3. Subida de Documentos (SOLO PDF)
         require_once(ABSPATH . 'wp-admin/includes/file.php');
         $doc_keys = ['p_doc_rut', 'p_doc_camara'];
         $docs_uploaded = false;
+        $error_pdf = false;
 
         foreach($doc_keys as $key) {
             if (!empty($_FILES[$key]['name'])) {
+                // VALIDACIÓN EXTENSIÓN Y MIME
+                $file_type = wp_check_filetype($_FILES[$key]['name']);
+                if ($file_type['ext'] !== 'pdf' && $_FILES[$key]['type'] !== 'application/pdf') {
+                    $error_pdf = true;
+                    continue; // Saltar este archivo
+                }
+
                 $upload = wp_handle_upload($_FILES[$key], ['test_form' => false]);
                 if (isset($upload['url'])) {
                     update_user_meta($uid, 'sms_file_' . $key, $upload['url']);
@@ -47,10 +57,23 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
             }
         }
 
+        if ($error_pdf) {
+             echo '<div class="woocommerce-error">❌ Error: Solo se permiten archivos PDF.</div>';
+        }
+
         if ($docs_uploaded) {
-            update_user_meta($uid, 'sms_docs_verified', 'pending'); // Resetear a pendiente si se suben nuevos
-            echo '<div class="woocommerce-message">📂 Documentos subidos correctamente. En espera de revisión.</div>';
-        } else {
+            update_user_meta($uid, 'sms_docs_verified', 'pending'); // Resetear a pendiente
+            
+            // NOTIFICAR AL ADMIN (Punto 3)
+            $admin_phone = get_option('sms_admin_phone');
+            $prov_name = get_user_meta($uid, 'sms_provider_company', true) ?: 'Proveedor #'.$uid;
+            
+            if($admin_phone && function_exists('sms_send_msg')) {
+                sms_send_msg($admin_phone, "📂 *Alerta Admin*\nEl proveedor *$prov_name* ha subido nuevos documentos PDF. Entra al plugin para verificar.");
+            }
+
+            echo '<div class="woocommerce-message">📂 Documentos PDF subidos. El administrador ha sido notificado.</div>';
+        } elseif (!$error_pdf) {
             echo '<div class="woocommerce-message">✅ Perfil actualizado correctamente.</div>';
         }
     }
@@ -71,6 +94,7 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     $my_servs = get_user_meta($uid, 'sms_subscribed_pages', true) ?: [];
     $balance = (int) get_user_meta($uid, 'sms_wallet_balance', true);
     $advisor = get_user_meta($uid, 'sms_advisor_name', true);
+    $company_name = get_user_meta($uid, 'sms_provider_company', true); // Nuevo dato
     $phone_status = get_user_meta($uid, 'sms_phone_status', true);
     $full_phone = get_user_meta($uid, 'billing_phone', true);
     
@@ -79,7 +103,7 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     $doc_camara = get_user_meta($uid, 'sms_file_p_doc_camara', true);
     $docs_status = get_user_meta($uid, 'sms_docs_verified', true);
 
-    // Parsear teléfono para mostrar en inputs
+    // Parsear teléfono
     $current_code = '+57'; $current_raw = $full_phone;
     if(strpos($full_phone, '+57')===0){ $current_code='+57'; $current_raw=substr($full_phone,3); }
     elseif(strpos($full_phone, '+52')===0){ $current_code='+52'; $current_raw=substr($full_phone,3); }
@@ -90,7 +114,7 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
 
     $view_lead_url = site_url('/oportunidad'); 
 
-    // --- CARGAR LEADS (COTIZACIONES) ---
+    // --- CARGAR LEADS ---
     $leads = [];
     if (!empty($my_servs)) {
         $ids_str = implode(',', array_map('intval', $my_servs));
@@ -169,7 +193,6 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                         $fecha = ($ts && date('Y', $ts) > 2000) ? date('d/m/Y', $ts) : 'Hoy';
                         $views = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id = {$l->id}");
                         
-                        // LÓGICA DE PRIVACIDAD: Ocultar nombre si no está desbloqueado
                         $display_company = $is_unlocked ? esc_html($l->client_company ?: 'Particular') : '🔒 Empresa Confidencial';
                     ?>
                     <div class="sms-lead-card">
@@ -218,7 +241,10 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                 <h4>⚙️ Configuración y Verificación</h4>
                 
                 <form method="post" enctype="multipart/form-data">
-                    <span class="sms-label">Nombre del Asesor (Visible al cliente)</span>
+                    <span class="sms-label">Nombre Comercial de la Empresa</span>
+                    <input type="text" name="p_company_name" value="<?php echo esc_attr($company_name); ?>" class="sms-input" placeholder="Ej: Soluciones SAS" required>
+
+                    <span class="sms-label">Nombre del Asesor</span>
                     <input type="text" name="p_advisor" value="<?php echo esc_attr($advisor); ?>" class="sms-input" placeholder="Ej: Juan Pérez" required>
 
                     <span class="sms-label">WhatsApp de Notificaciones 
@@ -239,21 +265,23 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
 
                     <div style="background:#f0f7ff; padding:10px; border-radius:6px; margin-bottom:15px; border:1px solid #cce5ff;">
                         <h5 style="margin:0 0 5px 0; color:#0056b3;">📂 Verificación de Empresa</h5>
-                        <p style="font-size:11px; margin:0 0 10px 0; color:#555;">Sube RUT y Cámara de Comercio para generar confianza.</p>
+                        <p style="font-size:11px; margin:0 0 10px 0; color:#555;">Sube RUT y Cámara de Comercio (Solo PDF).</p>
 
                         <?php if($docs_status == 'yes'): ?>
-                            <div style="color:green; font-weight:bold; font-size:12px; margin-bottom:5px;">✅ Documentos Aprobados</div>
+                            <div style="color:green; font-weight:bold; font-size:14px; margin-bottom:5px; background:#d4edda; padding:5px; text-align:center; border-radius:4px;">✅ VERIFICADO</div>
+                        <?php elseif($docs_status == 'rejected'): ?>
+                            <div style="color:red; font-weight:bold; font-size:12px; margin-bottom:5px;">❌ Documentos Rechazados. Sube nuevamente.</div>
                         <?php elseif($docs_status == 'pending'): ?>
                             <div style="color:orange; font-weight:bold; font-size:12px; margin-bottom:5px;">⏳ En Revisión</div>
                         <?php endif; ?>
 
-                        <label class="sms-label" style="font-size:12px;">RUT (PDF/Imagen)</label>
+                        <label class="sms-label" style="font-size:12px;">RUT (PDF)</label>
                         <?php if($doc_rut) echo "<a href='$doc_rut' target='_blank' class='doc-link'>Ver actual</a><br>"; ?>
-                        <input type="file" name="p_doc_rut" class="sms-input" style="font-size:12px;">
+                        <input type="file" name="p_doc_rut" class="sms-input" style="font-size:12px;" accept="application/pdf">
 
-                        <label class="sms-label" style="font-size:12px;">Cámara de Comercio</label>
+                        <label class="sms-label" style="font-size:12px;">Cámara de Comercio (PDF)</label>
                         <?php if($doc_camara) echo "<a href='$doc_camara' target='_blank' class='doc-link'>Ver actual</a><br>"; ?>
-                        <input type="file" name="p_doc_camara" class="sms-input" style="font-size:12px;">
+                        <input type="file" name="p_doc_camara" class="sms-input" style="font-size:12px;" accept="application/pdf">
                     </div>
 
                     <span class="sms-label">Mis Servicios Suscritos</span>
