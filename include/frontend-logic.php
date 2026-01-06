@@ -20,7 +20,7 @@ function sms_render_frontend() {
     }
     if (!$active_btn) return;
 
-    // Contar empresas
+    // Contar empresas disponibles para este servicio
     $users = get_users();
     $provider_count = 0;
     foreach ($users as $u) {
@@ -34,10 +34,12 @@ function sms_render_frontend() {
         .sms-fab { background: #25d366; color: #fff; padding: 12px 25px; border-radius: 50px; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.2); display: flex; align-items: center; gap: 10px; font-family: sans-serif; font-weight: bold; transition: transform 0.3s; }
         .sms-fab:hover { transform: scale(1.05); }
         .sms-counter-badge { background: #333; color: #fff; font-size: 11px; padding: 5px 10px; border-radius: 10px; margin-bottom: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); opacity: 0.9; }
+        
         .sms-modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; justify-content: center; align-items: center; }
         .sms-modal-box { background: #fff; width: 90%; max-width: 450px; padding: 25px; border-radius: 12px; position: relative; max-height: 90vh; overflow-y: auto; }
         .sms-input { width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
         .sms-btn-submit { width: 100%; padding: 12px; background: #007cba; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 5px; }
+        
         .sms-animate-pulse { animation: pulse 2s infinite; }
         @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(37, 211, 102, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(37, 211, 102, 0); } 100% { box-shadow: 0 0 0 0 rgba(37, 211, 102, 0); } }
     </style>
@@ -58,10 +60,26 @@ function sms_render_frontend() {
             
             <div id="smsStep1">
                 <h3>Solicitar Cotizaci&oacute;n</h3>
-                <p style="color:#666;">Enviar a <?php echo $provider_count; ?> empresas verificadas.</p>
+                <p style="color:#666; margin-bottom:15px;">Enviar a <?php echo $provider_count; ?> empresas verificadas.</p>
+                
                 <form id="smsLeadForm">
                     <input type="hidden" name="action" value="sms_submit_lead_step1">
                     <input type="hidden" name="page_id" value="<?php echo $current_page_id; ?>">
+                    
+                    <div style="margin-bottom:15px; display:flex; gap:15px; background:#f9f9f9; padding:10px; border-radius:6px;">
+                        <label style="cursor:pointer; display:flex; align-items:center;">
+                            <input type="radio" name="client_type" value="company" checked onclick="toggleCompany(true)" style="margin-right:5px;"> 
+                            Soy Empresa
+                        </label>
+                        <label style="cursor:pointer; display:flex; align-items:center;">
+                            <input type="radio" name="client_type" value="person" onclick="toggleCompany(false)" style="margin-right:5px;"> 
+                            Persona Natural
+                        </label>
+                    </div>
+
+                    <div id="msgPerson" style="display:none; background:#fff3cd; color:#856404; padding:10px; font-size:13px; margin-bottom:15px; border-radius:4px; border:1px solid #ffeeba;">
+                        鈿狅笍 <strong>Nota:</strong> Algunos proveedores solo cotizan a empresas constituidas (con RUT).
+                    </div>
                     
                     <select name="country" class="sms-input" id="smsCountrySel" onchange="updateSmsCode()">
                         <option value="Colombia" data-code="+57">&#127464;&#127476; Colombia (+57)</option>
@@ -74,7 +92,11 @@ function sms_render_frontend() {
                     </select>
 
                     <input type="text" name="city" placeholder="Ciudad" class="sms-input" required>
-                    <input type="text" name="company" placeholder="Tu Empresa (Opcional)" class="sms-input">
+                    
+                    <div id="fieldCompany">
+                        <input type="text" name="company" placeholder="Nombre de tu Empresa" class="sms-input">
+                    </div>
+
                     <input type="text" name="name" placeholder="Tu Nombre" class="sms-input" required>
                     
                     <div style="display:flex; gap:5px;">
@@ -124,6 +146,20 @@ function sms_render_frontend() {
         function openSmsModal(){ document.getElementById('smsModal').style.display='flex'; }
         function closeSmsModal(){ document.getElementById('smsModal').style.display='none'; }
         
+        // Nueva l贸gica para toggle de empresa/persona
+        function toggleCompany(isCompany) {
+            var field = document.getElementById('fieldCompany');
+            var msg = document.getElementById('msgPerson');
+            if(isCompany) {
+                field.style.display = 'block';
+                msg.style.display = 'none';
+            } else {
+                field.style.display = 'none';
+                msg.style.display = 'block';
+                field.querySelector('input').value = ''; // Limpiar valor
+            }
+        }
+
         function goToStep2(){ 
             document.getElementById('smsStepWaitInteraction').style.display='none'; 
             document.getElementById('smsStep2').style.display='block'; 
@@ -169,7 +205,7 @@ function sms_render_frontend() {
                     document.getElementById('smsStep2').style.display='none';
                     document.getElementById('smsStep3').style.display='block';
                 } else {
-                    document.getElementById('otpError').innerText = 'Código incorrecto.';
+                    document.getElementById('otpError').innerText = 'C贸digo incorrecto.';
                 }
             });
         }
@@ -177,7 +213,10 @@ function sms_render_frontend() {
     <?php
 }
 
+// ==========================================
 // AJAX HANDLERS (BACKEND)
+// ==========================================
+
 add_action('wp_ajax_sms_submit_lead_step1', 'sms_handle_step1');
 add_action('wp_ajax_nopriv_sms_submit_lead_step1', 'sms_handle_step1');
 
@@ -187,10 +226,16 @@ function sms_handle_step1() {
     $full_phone = sanitize_text_field($_POST['phone']);
     $email = sanitize_email($_POST['email']);
 
+    // Manejo de Empresa vs Particular
+    $company_val = sanitize_text_field($_POST['company']);
+    if (empty($company_val)) {
+        $company_val = 'Particular'; // Valor por defecto si es Persona Natural
+    }
+
     $data = [
         'country' => sanitize_text_field($_POST['country']),
         'city' => sanitize_text_field($_POST['city']),
-        'client_company' => sanitize_text_field($_POST['company']),
+        'client_company' => $company_val,
         'client_name' => sanitize_text_field($_POST['name']),
         'client_phone' => $full_phone,
         'client_email' => $email,
@@ -204,12 +249,10 @@ function sms_handle_step1() {
     $wpdb->insert("{$wpdb->prefix}sms_leads", $data);
     $lid = $wpdb->insert_id;
     
-    // ENVIAR MENSAJE INICIAL
-    // \xF0\x9F\x91\x8B = ??
-    // \xF0\x9F\x91\x89 = ??
-    // Se usan códigos HEX para evitar que el editor corrompa el emoji
+    // ENVIAR MENSAJE INICIAL CON UNICODE SEGURO
     if(function_exists('sms_send_msg')) {
-        $msg = "\xF0\x9F\x91\x8B Hola, recibimos tu solicitud.\n\nPara enviarte el c\xC3\xB3digo de verificaci\xC3\xB3n, responde a este mensaje:\n\n\xF0\x9F\x91\x89 Escribe *WHATSAPP* si quieres el c\xC3\xB3digo por aqu\xC3\xAD.\n\xF0\x9F\x91\x89 Escribe *EMAIL* si prefieres por correo.";
+        // Usamos JSON unicode para asegurar emojis
+        $msg = "馃憢 Hola, recibimos tu solicitud.\n\nPara enviarte el c贸digo de verificaci贸n, responde a este mensaje:\n\n馃憠 Escribe *WHATSAPP* si quieres el c贸digo por aqu铆.\n馃憠 Escribe *EMAIL* si prefieres por correo.";
         sms_send_msg($full_phone, $msg);
     }
 
@@ -229,9 +272,9 @@ function sms_handle_step2() {
         $wpdb->update("{$wpdb->prefix}sms_leads", ['is_verified' => 1], ['id' => $lid]);
         
         $admin_phone = get_option('sms_admin_phone');
-        // \xF0\x9F\x94\x94 = ??
+        
         if($admin_phone && function_exists('sms_send_msg')) {
-            sms_send_msg($admin_phone, "\xF0\x9F\x94\x94 Nueva cotizaci\xC3\xB3n verificada #$lid. Revisa el panel.");
+            sms_send_msg($admin_phone, "馃敂 Nueva cotizaci贸n verificada #$lid. Revisa el panel.");
         }
         wp_send_json_success();
     } else {
