@@ -12,20 +12,22 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     $uid = get_current_user_id();
     global $wpdb;
 
-    // A. GUARDAR PERFIL COMPLETO (Punto 4)
+    // A. GUARDAR PERFIL & VERIFICACIÓN WHATSAPP
     if (isset($_POST['save_provider_profile'])) {
-        // Datos Básicos
-        update_user_meta($uid, 'billing_company', sanitize_text_field($_POST['p_razon_social'])); // Razón Social
-        update_user_meta($uid, 'sms_commercial_name', sanitize_text_field($_POST['p_commercial_name'])); // Nombre Comercial
-        update_user_meta($uid, 'sms_nit', sanitize_text_field($_POST['p_nit']));
+        // 1. Obtener datos previos para comparar
+        $old_wa = get_user_meta($uid, 'sms_whatsapp_notif', true);
         
-        // Contacto
+        // 2. Limpiar y preparar nuevos datos
+        $new_wa = sanitize_text_field($_POST['p_whatsapp']);
+        $new_wa_clean = str_replace([' ','+'], '', $new_wa);
+
+        // 3. Guardar datos generales
+        update_user_meta($uid, 'billing_company', sanitize_text_field($_POST['p_razon_social']));
+        update_user_meta($uid, 'sms_commercial_name', sanitize_text_field($_POST['p_commercial_name']));
+        update_user_meta($uid, 'sms_nit', sanitize_text_field($_POST['p_nit']));
         update_user_meta($uid, 'billing_address_1', sanitize_text_field($_POST['p_address']));
         update_user_meta($uid, 'billing_phone', sanitize_text_field($_POST['p_phone']));
-        update_user_meta($uid, 'sms_whatsapp_notif', sanitize_text_field($_POST['p_whatsapp']));
         update_user_meta($uid, 'billing_email', sanitize_email($_POST['p_email']));
-        
-        // Detalles
         update_user_meta($uid, 'sms_advisor_name', sanitize_text_field($_POST['p_advisor']));
         update_user_meta($uid, 'sms_company_desc', sanitize_textarea_field($_POST['p_desc']));
 
@@ -33,29 +35,29 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         $requested_pages = $_POST['p_servs'] ?? [];
         update_user_meta($uid, 'sms_requested_services', $requested_pages);
         
-        // Lógica de Verificación de WhatsApp (NUEVA)
-        $old_wa = get_user_meta($uid, 'sms_whatsapp_notif', true);
-        $current_status = get_user_meta($uid, 'sms_phone_status', true);
-        $new_wa = sanitize_text_field($_POST['p_whatsapp']);
-        $new_wa_clean = str_replace([' ','+'], '', $new_wa);
-        
-        // Guardar el nuevo número
+        // 4. Guardar el nuevo número de WhatsApp
         update_user_meta($uid, 'sms_whatsapp_notif', $new_wa_clean);
 
         $msg_extra = "";
-        // Si el número cambió o nunca se ha verificado, pedir confirmación
-        if ($new_wa_clean && ($new_wa_clean !== $old_wa || $current_status !== 'verified')) {
+
+        // 5. LÓGICA CORREGIDA: Solo enviar mensaje SI EL NÚMERO CAMBIÓ
+        if ($new_wa_clean && $new_wa_clean !== $old_wa) {
+            // Resetear estado a pendiente solo si cambió el número
             update_user_meta($uid, 'sms_phone_status', 'pending');
             
             if (function_exists('sms_send_msg')) {
                 $site_name = get_bloginfo('name');
-                $txt = "🔐 *Activación de Notificaciones*\n\nHola, para recibir alertas de clientes de *$site_name*, por favor responde a este mensaje escribiendo:\n\n*CONFIRMADO*";
+                $txt = "🔐 *Activación de Notificaciones*\n\nHola, hemos detectado un cambio de número en *$site_name*. Para volver a recibir alertas, responde:\n\n*CONFIRMADO*";
                 sms_send_msg($new_wa_clean, $txt);
-                $msg_extra = "<br>📨 <strong>¡Atención!</strong> Te enviamos un WhatsApp. Responde <b>CONFIRMADO</b> en tu celular para activar las notificaciones.";
+                $msg_extra = "<br>📨 <strong>¡Número actualizado!</strong> Te enviamos un nuevo mensaje de confirmación a WhatsApp.";
             }
+        } 
+        // Si el número es el mismo pero sigue pendiente, solo mostramos aviso visual (sin spam)
+        elseif (get_user_meta($uid, 'sms_phone_status', true) !== 'verified') {
+            $msg_extra = "<br>⚠️ Tu WhatsApp aún no está verificado. Busca el mensaje anterior y responde <b>CONFIRMADO</b>.";
         }
 
-        echo '<div class="woocommerce-message">✅ Perfil actualizado. ' . $msg_extra . '</div>';
+        echo '<div class="woocommerce-message">✅ Perfil actualizado correctamente.' . $msg_extra . '</div>';
     }
 
     // B. SOLICITUD SERVICIO
@@ -299,5 +301,6 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     </div>
     <?php
 });
+
 
 
