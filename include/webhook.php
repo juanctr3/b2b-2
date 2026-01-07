@@ -2,19 +2,21 @@
 if (!defined('ABSPATH')) exit;
 
 /**
- * 1. FUNCIÓN DE ENVÍO MENSAJES
+ * 1. FUNCIÓN DE ENVÍO MENSAJES (CORREGIDA A FORMATO FORM-URLENCODED)
+ * Restablecido al formato que funcionaba en tu archivo original.
  */
 function sms_send_msg($to, $msg) {
     $url = "https://whatsapp.smsenlinea.com/api/send/whatsapp";
     
-    // Limpieza estricta: solo números
+    // 1. Limpieza: Dejar solo números (sin +, sin espacios)
     $to = preg_replace('/[^0-9]/', '', $to);
 
-    // Asegurar UTF-8
+    // 2. Asegurar UTF-8 para emojis
     if (function_exists('mb_convert_encoding')) {
         $msg = mb_convert_encoding($msg, 'UTF-8', 'auto');
     }
 
+    // 3. Datos del payload
     $data = [
         "secret"    => get_option('sms_api_secret'),
         "account"   => get_option('sms_account_id'),
@@ -24,12 +26,20 @@ function sms_send_msg($to, $msg) {
         "priority"  => 1
     ];
 
-    wp_remote_post($url, [
-        'body'      => json_encode($data), 
-        'timeout'   => 15,
-        'blocking'  => false,
-        'headers'   => ['Content-Type' => 'application/json; charset=utf-8']
+    // 4. Envío usando x-www-form-urlencoded (Formato nativo de la API)
+    $response = wp_remote_post($url, [
+        'body'      => $data, 
+        'timeout'   => 20,
+        'blocking'  => true, // Importante: TRUE para asegurar el envío
+        'headers'   => [
+            'Content-Type' => 'application/x-www-form-urlencoded; charset=utf-8'
+        ]
     ]);
+    
+    // Debug en caso de error (Revisa el archivo debug.log de WP si algo falla)
+    if (is_wp_error($response)) {
+        error_log('SMS Error: ' . $response->get_error_message());
+    }
 }
 
 /**
@@ -44,6 +54,7 @@ function sms_notify_client_match($lead_id, $provider_user_id) {
 
     $p_company = get_user_meta($provider_user_id, 'sms_commercial_name', true) ?: ($prov->billing_company ?: 'Empresa Verificada');
     $p_advisor = get_user_meta($provider_user_id, 'sms_advisor_name', true) ?: $prov->display_name;
+    // Preferimos el whatsapp de notificación, si no, el teléfono de facturación
     $p_phone   = get_user_meta($provider_user_id, 'sms_whatsapp_notif', true) ?: $prov->billing_phone;
     $p_email   = $prov->user_email;
     $profile_link = site_url("/perfil-proveedor?uid=" . $provider_user_id);
@@ -71,7 +82,6 @@ function sms_smart_notification($lead_id) {
 
     $base_url = site_url('/oportunidad'); 
     $shop_url = site_url('/tienda');
-    
     $users = get_users();
     
     foreach($users as $u) {
@@ -79,11 +89,7 @@ function sms_smart_notification($lead_id) {
         $status = get_user_meta($u->ID, 'sms_phone_status', true);
         if($status != 'verified') continue;
 
-        // 2. Verificar Documentos aprobados (Opcional)
-        // $docs = get_user_meta($u->ID, 'sms_docs_status', true);
-        // if($docs != 'verified') continue; 
-
-        // 3. Verificar Servicio Aprobado (Corregido)
+        // 2. Verificar Servicio Aprobado (Corregido a 'sms_approved_services')
         $subs = get_user_meta($u->ID, 'sms_approved_services', true);
         
         if(is_array($subs) && in_array($lead->service_page_id, $subs)) {
@@ -133,10 +139,10 @@ function sms_handle_incoming_interaction($req) {
 
     if(isset($params['type']) && $params['type'] == 'whatsapp') {
         $msg_body = trim(strtoupper($params['data']['message'])); 
-        // Limpiamos el teléfono del remitente (quitamos + y espacios)
+        // Obtenemos el teléfono y lo limpiamos de inmediato
         $phone_sender = preg_replace('/[^0-9]/', '', $params['data']['phone']); 
         
-        // Validación de seguridad: Ignorar números inválidos o muy cortos
+        // Validación de seguridad: ignorar números inválidos
         if(strlen($phone_sender) < 7) return new WP_REST_Response('Invalid Phone', 400);
 
         // Evitar duplicados (Idempotencia)
@@ -211,22 +217,23 @@ function sms_handle_incoming_interaction($req) {
         }
         
         // --------------------------------------------------------
-        // C. CLIENTE: VERIFICACIÓN (SOLICITA CÓDIGO)
+        // C. CLIENTE: VERIFICACIÓN (SOLICITA CÓDIGO) - CORREGIDO
         // --------------------------------------------------------
         elseif (strpos($msg_body, 'WHATSAPP') !== false) {
-            // Buscamos lead por coincidencia parcial de teléfono
+            // Buscamos el lead usando LIKE para ser flexibles con el formato
             $lead = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE client_phone LIKE '%$phone_sender' AND is_verified = 0 ORDER BY created_at DESC LIMIT 1");
             
             if ($lead) {
                 $otp_key = 'sms_otp_lock_' . $phone_sender;
                 if (!get_transient($otp_key)) {
-                    // IMPORTANTE: Enviamos la respuesta a $phone_sender (quien escribió)
+                    // AQUÍ ESTÁ LA CLAVE: Enviamos la respuesta EXPLICITAMENTE a $phone_sender
+                    // que es el número que acaba de escribir el mensaje.
                     sms_send_msg($phone_sender, "$e_lock Tu código de verificación es: *{$lead->verification_code}*");
                     set_transient($otp_key, true, 45);
                 }
             } else {
-                // Debug (Opcional): Si no encuentra lead, puede ser porque el número en BD tiene formato diferente
-                // error_log("SMS Debug: No lead found for $phone_sender requesting code.");
+                // Debug opcional si no encuentra el lead
+                // error_log("SMS: No se encontró lead para el teléfono $phone_sender");
             }
         }
         
