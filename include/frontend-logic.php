@@ -20,14 +20,21 @@ function sms_render_frontend() {
     }
     if (!$active_btn) return;
 
-    // Contar empresas disponibles para este servicio
+    // CORRECCIÓN: Contar usando la clave correcta 'sms_approved_services'
     $users = get_users();
     $provider_count = 0;
+    
     foreach ($users as $u) {
-        $subs = get_user_meta($u->ID, 'sms_subscribed_pages', true);
-        if (is_array($subs) && in_array($current_page_id, $subs)) $provider_count++;
-    }
+        // Verificamos que tenga servicios aprobados
+        $subs = get_user_meta($u->ID, 'sms_approved_services', true);
+        
+        // También verificamos que el proveedor tenga documentos aprobados para que sea un contador real
+        $docs_ok = get_user_meta($u->ID, 'sms_docs_status', true) === 'verified';
 
+        if ($docs_ok && is_array($subs) && in_array($current_page_id, $subs)) {
+            $provider_count++;
+        }
+    }
     ?>
     <style>
         .sms-fab-container { position: fixed; bottom: 30px; right: 30px; z-index: 9999; display:flex; flex-direction:column; align-items:flex-end; }
@@ -349,3 +356,4 @@ function sms_render_public_profile() {
     <?php
     return ob_get_clean();
 }
+
