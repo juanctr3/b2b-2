@@ -83,6 +83,7 @@ function sms_notify_client_match($lead_id, $provider_user_id) {
 }
 
 // ==========================================
+// ==========================================
 // 3. NOTIFICACIÓN A PROVEEDORES (NUEVA COTIZACIÓN)
 // ==========================================
 add_action('sms_notify_providers', 'sms_smart_notification', 10, 1);
@@ -96,13 +97,23 @@ function sms_smart_notification($lead_id) {
     $shop_url = site_url('/tienda');
 
     $users = get_users();
+    $sent_count = 0; // Debug para saber cuántos se enviaron
+
     foreach($users as $u) {
+        // 1. Verificar que tenga WhatsApp verificado
         $status = get_user_meta($u->ID, 'sms_phone_status', true);
         if($status != 'verified') continue;
 
-        $subs = get_user_meta($u->ID, 'sms_subscribed_pages', true);
+        // 2. Verificar documentos aprobados (Opcional, pero recomendado para calidad)
+        $docs = get_user_meta($u->ID, 'sms_docs_status', true);
+        if($docs != 'verified') continue;
+
+        // 3. CORRECCIÓN: Usar la clave correcta 'sms_approved_services'
+        $subs = get_user_meta($u->ID, 'sms_approved_services', true);
+        
         if(is_array($subs) && in_array($lead->service_page_id, $subs)) {
-            $phone = get_user_meta($u->ID, 'billing_phone', true);
+            
+            $phone = get_user_meta($u->ID, 'sms_whatsapp_notif', true) ?: get_user_meta($u->ID, 'billing_phone', true);
             $email = $u->user_email;
 
             if($phone) {
@@ -110,21 +121,29 @@ function sms_smart_notification($lead_id) {
                 $cost = (int) $lead->cost_credits;
                 $desc_short = mb_substr($lead->requirement, 0, 100) . '...';
                 
+                // Mensaje diferente según saldo
                 if ($balance >= $cost) {
                     $link = $base_url . "?lid=" . $lead_id;
-                    $msg = "🔔 *Nueva Cotización #$lead_id*\n📍 {$lead->city}\n📝 $desc_short\n\n💰 Saldo: *$balance cr* | Costo: *$cost cr*\n\n👉 Responde *ACEPTO $lead_id* para comprar ya.\n👉 O mira detalles aquí: $link";
+                    $msg = "🔔 *Nueva Cotización #$lead_id*\n📍 {$lead->city}\n📝 $desc_short\n\n💰 Saldo: *$balance cr* | Costo: *$cost cr*\n\n👉 Responde *ACEPTO $lead_id* para comprar.\n👉 Ver: $link";
                 } else {
-                    $msg = "🔔 *Nueva Cotización #$lead_id*\n⚠️ *Saldo Insuficiente* (Tienes $balance cr).\n📝 $desc_short\n\n👉 Recarga aquí: $shop_url";
+                    $msg = "🔔 *Nueva Cotización #$lead_id*\n⚠️ *Saldo Insuficiente* ($balance cr).\n📝 $desc_short\n\n👉 Recarga aquí: $shop_url";
                 }
+                
                 sms_send_msg($phone, $msg);
+                $sent_count++;
 
-                // Email opcional al proveedor
+                // Email de respaldo
                 $headers = ['Content-Type: text/html; charset=UTF-8'];
                 $subject = "Nueva Oportunidad #$lead_id";
                 $body = "<h3>Solicitud en {$lead->city}</h3><p>{$lead->requirement}</p><p><a href='$link'>Ver en Web</a></p>";
                 wp_mail($email, $subject, $body, $headers);
             }
         }
+    }
+    
+    // (Opcional) Guardar en log de errores si no se envió a nadie, para debug
+    if($sent_count === 0) {
+        error_log("SMS B2B: Cotización #$lead_id aprobada pero no se encontraron proveedores aptos (Verificados + Servicio Aprobado).");
     }
 }
 
@@ -223,4 +242,5 @@ function sms_handle_incoming_interaction($req) {
     }
     return new WP_REST_Response('OK', 200);
 }
+
 
