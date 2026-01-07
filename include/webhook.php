@@ -143,126 +143,82 @@ function sms_handle_incoming_interaction($req) {
     global $wpdb;
     $params = $req->get_params();
 
-    // Emojis
-    $e_check = "\xE2\x9C\x85"; $e_gift = "\xF0\x9F\x8E\x81"; $e_party = "\xF0\x9F\x8E\x89"; 
-    $e_user = "\xF0\x9F\x91\xA4"; $e_phone = "\xF0\x9F\x93\x9E"; $e_mail = "\xE2\x9C\x89"; 
-    $e_lock = "\xF0\x9F\x94\x90"; $e_x = "\xE2\x9D\x8C"; $e_build = "\xF0\x9F\x8F\xA2"; 
-    $e_memo = "\xF0\x9F\x93\x9D"; $e_world = "\xF0\x9F\x8C\x8D"; $e_pin = "\xF0\x9F\x93\x8D";
-    $e_tie  = "\xF0\x9F\x91\x94"; $e_link = "\xF0\x9F\x94\x97";
+    // Emojis básicos
+    $e_check = "\xE2\x9C\x85"; $e_x = "\xE2\x9D\x8C";
 
     if(isset($params['type']) && $params['type'] == 'whatsapp') {
         $msg_body = trim(strtoupper($params['data']['message'])); 
-        $phone_sender = str_replace('+', '', $params['data']['phone']); 
+        $phone_sender = str_replace(['+',' '], '', $params['data']['phone']); 
         
+        // Evitar duplicados (Idempotencia)
         $transient_key = 'sms_lock_' . md5($phone_sender . $msg_body);
         if (get_transient($transient_key)) return new WP_REST_Response('Ignored', 200);
         set_transient($transient_key, true, 60);
 
-        // A. Verificación de Cuenta del Proveedor
-        if ($msg_body === 'ACEPTO') {
-            $users = get_users(['meta_query' => [['key' => 'billing_phone', 'value' => $phone_sender, 'compare' => 'LIKE']], 'number' => 1]);
+        // A. VERIFICACIÓN DE WHATSAPP CON "CONFIRMADO" (NUEVO)
+        if ($msg_body === 'CONFIRMADO') {
+            // Buscamos al usuario por el número de notificación
+            $users = get_users(['meta_query' => [['key' => 'sms_whatsapp_notif', 'value' => $phone_sender, 'compare' => 'LIKE']], 'number' => 1]);
+            
             if (!empty($users)) {
                 $u = $users[0];
                 update_user_meta($u->ID, 'sms_phone_status', 'verified');
-                sms_send_msg($phone_sender, "$e_check ¡Cuenta Verificada! Ahora recibirás alertas.");
+                
+                // Dar bono si aplica
+                $bonus = (int) get_option('sms_welcome_bonus', 0);
+                $given = get_user_meta($u->ID, '_sms_bonus_given', true);
+                $bonus_msg = "";
+                
+                if ($bonus > 0 && !$given) {
+                    $curr = (int) get_user_meta($u->ID, 'sms_wallet_balance', true);
+                    update_user_meta($u->ID, 'sms_wallet_balance', $curr + $bonus);
+                    update_user_meta($u->ID, '_sms_bonus_given', 'yes');
+                    $bonus_msg = "\n🎁 *¡Recibiste $bonus créditos de regalo!*";
+                }
+
+                sms_send_msg($phone_sender, "$e_check *¡Notificaciones Activadas!*\nAhora recibirás aquí los datos de los clientes.$bonus_msg");
             }
         }
-        // B. COMPRA VIA WHATSAPP (Lógica Principal Mejorada)
+
+        // B. COMPRA VIA WHATSAPP (ACEPTO ID)
         elseif (preg_match('/^ACEPTO\s+(\d+)/i', $msg_body, $matches)) {
             $lead_id = intval($matches[1]);
-            $users = get_users(['meta_query' => [['key' => 'billing_phone', 'value' => $phone_sender, 'compare' => 'LIKE']], 'number' => 1]);
+            $users = get_users(['meta_query' => [['key' => 'sms_whatsapp_notif', 'value' => $phone_sender, 'compare' => 'LIKE']], 'number' => 1]);
             
             if(!empty($users)) {
                 $u = $users[0];
+                
+                // Verificar que esté confirmado antes de dejarle comprar
+                $status = get_user_meta($u->ID, 'sms_phone_status', true);
+                if($status != 'verified') {
+                    sms_send_msg($phone_sender, "⚠️ Tu número no está confirmado. Responde *CONFIRMADO* para activarlo.");
+                    return new WP_REST_Response('OK', 200);
+                }
+
                 $lead = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE id=$lead_id");
                 $approved_services = get_user_meta($u->ID, 'sms_approved_services', true) ?: [];
                 
                 if($lead && in_array($lead->service_page_id, $approved_services)) {
-                    
-                    // Verificar saldo o si ya compró
                     $already = $wpdb->get_var("SELECT id FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id=$lead_id AND provider_user_id={$u->ID}");
                     $bal = (int) get_user_meta($u->ID, 'sms_wallet_balance', true);
                     
                     if($already || $bal >= $lead->cost_credits) {
-                        
                         if(!$already) {
                             update_user_meta($u->ID, 'sms_wallet_balance', $bal - $lead->cost_credits);
                             $wpdb->insert("{$wpdb->prefix}sms_lead_unlocks", ['lead_id' => $lead_id, 'provider_user_id' => $u->ID]);
+                            if(function_exists('sms_notify_client_match')) sms_notify_client_match($lead_id, $u->ID);
                         }
-
-                        // --- 1. MENSAJE PARA EL PROVEEDOR (Tus requisitos punto 2) ---
-                        // Limpiar celular cliente (quitar +57 o 57 al inicio)
-                        $client_cel_clean = preg_replace('/^(\+?57)/', '', $lead->client_phone);
-                        $client_comp = $lead->client_company ?: 'Particular';
-                        
-                        $msg_prov = "$e_party *¡Compra Exitosa! Detalle del Lead #$lead_id*\n\n" .
-                                    "$e_build *Empresa:* $client_comp\n" .
-                                    "$e_user *Contacto:* {$lead->client_name}\n" .
-                                    "$e_mail *Email:* {$lead->client_email}\n" .
-                                    "$e_phone *Celular:* $client_cel_clean\n" .
-                                    "$e_pin *Ciudad:* {$lead->city}\n" .
-                                    "$e_world *País:* {$lead->country}\n\n" .
-                                    "$e_memo *Requerimiento:*\n{$lead->requirement}";
-                        
-                        sms_send_msg($phone_sender, $msg_prov);
-
-                        // --- 2. MENSAJE PARA EL CLIENTE (Tus requisitos punto 1) ---
-                        // Obtener datos del proveedor
-                        $prov_com_name = get_user_meta($u->ID, 'sms_commercial_name', true) ?: ($u->billing_company ?: $u->display_name);
-                        $prov_advisor = get_user_meta($u->ID, 'sms_advisor_name', true) ?: 'Asesor Comercial';
-                        $prov_wa = get_user_meta($u->ID, 'sms_whatsapp_notif', true) ?: $phone_sender;
-                        $prov_email = get_user_meta($u->ID, 'billing_email', true) ?: $u->user_email;
-                        
-                        // Enlace al perfil (asumiendo que la página es /perfil-proveedor)
-                        $profile_link = site_url("/perfil-proveedor?uid=" . $u->ID);
-
-                        $msg_client = "👋 Hola {$lead->client_name}.\n\n" .
-                                      "$e_check *¡Buenas Noticias! Un proveedor ha aceptado tu solicitud.*\n\n" .
-                                      "$e_build *Empresa:* $prov_com_name\n" .
-                                      "$e_tie *Asesor:* $prov_advisor\n" .
-                                      "$e_phone *WhatsApp:* $prov_wa\n" .
-                                      "$e_mail *Email:* $prov_email\n\n" .
-                                      "$e_link *Ver Perfil y Trayectoria:*\n$profile_link";
-                        
-                        sms_send_msg($lead->client_phone, $msg_client);
-
-                        // Enviar también por Email al Cliente
-                        $subject = "✅ Proveedor Asignado: $prov_com_name";
-                        $body = "<h3>Hola {$lead->client_name},</h3>" .
-                                "<p>La empresa <strong>$prov_com_name</strong> ha revisado tu solicitud y está interesada.</p>" .
-                                "<ul>" .
-                                "<li><strong>Asesor:</strong> $prov_advisor</li>" .
-                                "<li><strong>WhatsApp:</strong> $prov_wa</li>" .
-                                "<li><strong>Email:</strong> $prov_email</li>" .
-                                "</ul>" .
-                                "<p><a href='$profile_link' style='background:#007cba; color:#fff; padding:10px; text-decoration:none; border-radius:5px;'>Ver Perfil de la Empresa</a></p>";
-                        
-                        $headers = ['Content-Type: text/html; charset=UTF-8'];
-                        wp_mail($lead->client_email, $subject, $body, $headers);
-
+                        // Enviar datos del lead
+                        $client_phone = str_replace('+','', $lead->client_phone);
+                        $info = "$e_check *Datos Lead #$lead_id*\n\n👤 {$lead->client_name}\n📞 +$client_phone\n📧 {$lead->client_email}\n📝 {$lead->requirement}";
+                        sms_send_msg($phone_sender, $info);
                     } else {
-                        sms_send_msg($phone_sender, "$e_x Saldo insuficiente ($bal cr). Recarga en: " . site_url('/tienda'));
+                        sms_send_msg($phone_sender, "$e_x Saldo insuficiente ($bal cr).");
                     }
                 } else {
-                    sms_send_msg($phone_sender, "$e_x No autorizado o cotización expirada.");
+                    sms_send_msg($phone_sender, "$e_x Oferta no disponible o no autorizada.");
                 }
             }
-        }
-        // C. y D. (Verificación Cliente) se mantienen igual...
-        elseif (strpos($msg_body, 'WHATSAPP') !== false) {
-            $lead = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE client_phone LIKE '%$phone_sender' AND is_verified = 0 ORDER BY created_at DESC LIMIT 1");
-            $otp_key = 'sms_otp_lock_' . $phone_sender;
-            if ($lead && !get_transient($otp_key)) {
-                sms_send_msg($phone_sender, "$e_lock Tu código de verificación: *{$lead->verification_code}*");
-                set_transient($otp_key, true, 45);
-            }
-        }
-        elseif (strpos($msg_body, 'EMAIL') !== false) {
-             $lead = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE client_phone LIKE '%$phone_sender' AND is_verified = 0 ORDER BY created_at DESC LIMIT 1");
-             if ($lead && is_email($lead->client_email)) {
-                 wp_mail($lead->client_email, "Código", "Tu código es: {$lead->verification_code}");
-                 sms_send_msg($phone_sender, "$e_mail Código enviado al email.");
-             }
         }
     }
     return new WP_REST_Response('OK', 200);
