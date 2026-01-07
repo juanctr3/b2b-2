@@ -5,9 +5,22 @@ if (!defined('ABSPATH')) exit;
 // 1. INICIALIZACIÓN (MENÚS Y SETTINGS)
 // ==========================================
 add_action('admin_menu', function() {
+    // Contar proveedores pendientes REALES usando la meta key correcta
+    $pending_docs = get_users([
+        'meta_key' => 'sms_docs_status', // CORREGIDO
+        'meta_value' => 'pending',
+        'fields' => 'ID'
+    ]);
+    $pending_count = count($pending_docs);
+
+    $menu_label = 'Plataforma B2B';
+    if ($pending_count > 0) {
+        $menu_label .= " <span class='awaiting-mod count-$pending_count'><span class='pending-count'>$pending_count</span></span>";
+    }
+    
     add_menu_page(
         'Plataforma B2B', 
-        'Plataforma B2B', 
+        $menu_label, // Título con burbuja roja
         'manage_options', 
         'sms-b2b', 
         'sms_render_dashboard', 
@@ -38,9 +51,9 @@ add_action('admin_init', function() {
 function sms_render_dashboard() {
     $tab = $_GET['tab'] ?? 'leads';
 
-    // ALERTA: Contar documentos pendientes
+    // ALERTA: Contar documentos pendientes (Meta key corregida)
     $pending_docs = get_users([
-        'meta_key' => 'sms_docs_verified',
+        'meta_key' => 'sms_docs_status',
         'meta_value' => 'pending',
         'fields' => 'ID'
     ]);
@@ -148,7 +161,6 @@ function sms_tab_leads() {
     </div>
 
     <table class="widefat striped">
-        <table class="widefat striped">
         <thead>
             <tr>
                 <th>Fecha</th>
@@ -166,14 +178,12 @@ function sms_tab_leads() {
                 $fecha_display = ($ts && date('Y', $ts) > 2000) ? date_i18n(get_option('date_format'), $ts) : '<span style="color:#999">(Sin fecha)</span>';
                 
                 // --- LÓGICA PUNTO 2: CONTAR PROVEEDORES HABILITADOS ---
-                // Obtenemos todos los usuarios proveedores
                 $all_providers = get_users(['meta_key' => 'sms_approved_services', 'meta_compare' => 'EXISTS']);
                 $enabled_providers = [];
                 
                 foreach($all_providers as $prov) {
                     $prov_services = get_user_meta($prov->ID, 'sms_approved_services', true);
                     if (is_array($prov_services) && in_array($l->service_page_id, $prov_services)) {
-                        // Intentamos obtener el nombre comercial, si no, la razón social, si no, el nombre de usuario
                         $com_name = get_user_meta($prov->ID, 'sms_commercial_name', true);
                         $raz_soc = get_user_meta($prov->ID, 'billing_company', true);
                         $enabled_providers[] = $com_name ?: ($raz_soc ?: $prov->display_name);
@@ -194,7 +204,6 @@ function sms_tab_leads() {
                     📞 <?php echo esc_html($l->client_phone); ?><br>
                     ✉️ <?php echo esc_html($l->client_email); ?>
                 </td>
-                
                 <td>
                     <strong><?php echo esc_html($service_name); ?></strong>
                     <div style="margin-top:8px;">
@@ -214,7 +223,6 @@ function sms_tab_leads() {
                         <?php endif; ?>
                     </div>
                 </td>
-                
                 <td>
                     <form method="post" style="padding:5px;">
                         <input type="hidden" name="lead_id" value="<?php echo $l->id; ?>">
@@ -246,7 +254,7 @@ function sms_tab_leads() {
 }
 
 // ==========================================
-// 4. PESTAÑA: PROVEEDORES (GESTIÓN DOCUMENTOS Y CRÉDITOS)
+// 4. PESTAÑA: PROVEEDORES (CORREGIDA)
 // ==========================================
 function sms_tab_providers() {
     global $wpdb;
@@ -255,7 +263,6 @@ function sms_tab_providers() {
     if (isset($_POST['manual_credit_change'])) {
         $uid = intval($_POST['target_user_id']);
         $amount = intval($_POST['credit_amount']);
-        
         if ($uid > 0 && $amount != 0) {
             $current = (int) get_user_meta($uid, 'sms_wallet_balance', true);
             $new = $current + $amount;
@@ -264,33 +271,43 @@ function sms_tab_providers() {
         }
     }
 
-    // B. Procesar APROBACIÓN/RECHAZO DE DOCUMENTOS (Punto 4)
+    // B. APROBACIÓN/RECHAZO DE DOCUMENTOS (CORREGIDO)
     if (isset($_POST['doc_action'])) {
         $uid = intval($_POST['target_user_id']);
         $action = $_POST['doc_action'];
-        $prov_phone = get_user_meta($uid, 'billing_phone', true);
+        
+        // Obtener teléfono para notificar
+        $prov_phone = get_user_meta($uid, 'sms_whatsapp_notif', true) ?: get_user_meta($uid, 'billing_phone', true);
 
         if ($action == 'approve') {
-            update_user_meta($uid, 'sms_docs_verified', 'yes');
+            update_user_meta($uid, 'sms_docs_status', 'verified'); // KEY CORREGIDA
             
-            // Notificar al Proveedor por WhatsApp
-            if(function_exists('sms_send_msg')) {
-                sms_send_msg($prov_phone, "✅ *Documentos Aprobados*\nTu empresa ahora está verificada en la plataforma. Esto generará más confianza a los clientes.");
+            if(function_exists('sms_send_msg') && $prov_phone) {
+                sms_send_msg($prov_phone, "✅ *Documentos Aprobados*\nTu empresa ha sido verificada. Ya puedes participar en las cotizaciones.");
             }
-            echo "<div class='notice notice-success is-dismissible'><p>✅ Documentos aprobados. Proveedor notificado por WhatsApp.</p></div>";
+            echo "<div class='notice notice-success is-dismissible'><p>✅ Documentos aprobados. Proveedor notificado.</p></div>";
         } 
         elseif ($action == 'reject') {
-            update_user_meta($uid, 'sms_docs_verified', 'rejected');
+            update_user_meta($uid, 'sms_docs_status', 'rejected'); // KEY CORREGIDA
+            delete_user_meta($uid, 'sms_company_docs'); // Opcional: Borrar archivos para obligar a subir nuevos
             
-            // Notificar al Proveedor por WhatsApp
-            if(function_exists('sms_send_msg')) {
-                sms_send_msg($prov_phone, "❌ *Documentos Rechazados*\nPor favor ingresa a tu panel, verifica que los archivos sean legibles y vuelve a subirlos (Solo PDF).");
+            if(function_exists('sms_send_msg') && $prov_phone) {
+                sms_send_msg($prov_phone, "❌ *Documentos Rechazados*\nPor favor ingresa a tu panel y sube documentos legibles (RUT y Cámara de Comercio).");
             }
-            echo "<div class='notice notice-error is-dismissible'><p>❌ Documentos rechazados. Proveedor notificado por WhatsApp.</p></div>";
+            echo "<div class='notice notice-error is-dismissible'><p>❌ Documentos rechazados. Se solicitó volver a subir.</p></div>";
         }
     }
 
-    $users = get_users(); 
+    // Ordenar: Pendientes arriba
+    $users = get_users(['orderby' => 'ID', 'order' => 'DESC']); 
+    usort($users, function($a, $b) {
+        $sa = get_user_meta($a->ID, 'sms_docs_status', true);
+        $sb = get_user_meta($b->ID, 'sms_docs_status', true);
+        if ($sa == 'pending' && $sb != 'pending') return -1;
+        if ($sa != 'pending' && $sb == 'pending') return 1;
+        return 0;
+    });
+
     ?>
     <h3>Gestión de Proveedores</h3>
     <table class="widefat striped">
@@ -306,20 +323,18 @@ function sms_tab_providers() {
         <tbody>
             <?php foreach($users as $u): 
                 $balance = (int) get_user_meta($u->ID, 'sms_wallet_balance', true);
-                $phone = get_user_meta($u->ID, 'billing_phone', true);
+                $phone = get_user_meta($u->ID, 'sms_whatsapp_notif', true) ?: get_user_meta($u->ID, 'billing_phone', true);
                 $advisor = get_user_meta($u->ID, 'sms_advisor_name', true);
-                $company_name = get_user_meta($u->ID, 'sms_provider_company', true);
-                $status = get_user_meta($u->ID, 'sms_phone_status', true);
+                $company_name = get_user_meta($u->ID, 'billing_company', true);
+                $status_wa = get_user_meta($u->ID, 'sms_phone_status', true);
                 
-                $subs = get_user_meta($u->ID, 'sms_subscribed_pages', true);
-                $serv_count = is_array($subs) ? count($subs) : 0;
+                // DATA CORREGIDA
+                $docs_urls = get_user_meta($u->ID, 'sms_company_docs', true);
+                $doc_stat = get_user_meta($u->ID, 'sms_docs_status', true); // KEY CORREGIDA
                 
-                // Datos de Documentos
-                $rut = get_user_meta($u->ID, 'sms_file_p_doc_rut', true);
-                $camara = get_user_meta($u->ID, 'sms_file_p_doc_camara', true);
-                $doc_stat = get_user_meta($u->ID, 'sms_docs_verified', true);
+                $style_row = ($doc_stat == 'pending') ? 'background:#fff9db;' : '';
             ?>
-            <tr>
+            <tr style="<?php echo $style_row; ?>">
                 <td>
                     <strong><?php echo esc_html($company_name ?: $u->display_name); ?></strong><br>
                     <small>👤 <?php echo $advisor ? $advisor : 'Sin asesor'; ?></small><br>
@@ -327,48 +342,52 @@ function sms_tab_providers() {
                     <small>📧 <?php echo $u->user_email; ?></small>
                 </td>
                 <td>
-                    <?php echo ($status=='verified') 
+                    <?php echo ($status_wa=='verified') 
                         ? '<span class="badge" style="background:#d4edda; color:#155724; padding:3px 6px; border-radius:4px;">✅ Verificado</span>' 
                         : '<span class="badge" style="background:#f8d7da; color:#721c24; padding:3px 6px; border-radius:4px;">⏳ Pendiente</span>'; 
                     ?>
                 </td>
-                <td style="<?php if($doc_stat=='pending') echo 'background:#fff3cd;'; ?>">
-                    <?php if($rut): ?>
-                        <a href="<?php echo $rut; ?>" target="_blank" class="button button-small" style="margin-bottom:2px;">📄 Ver RUT</a><br>
-                    <?php endif; ?>
-                    
-                    <?php if($camara): ?>
-                        <a href="<?php echo $camara; ?>" target="_blank" class="button button-small">📄 Ver Cámara</a><br>
-                    <?php endif; ?>
-
-                    <div style="margin-top:5px; font-size:12px;">
+                <td>
+                    <div style="margin-bottom:5px; font-weight:bold;">
                         Estado: 
                         <?php 
-                        if ($doc_stat=='yes') echo '<strong style="color:green">✅ VERIFICADO</strong>';
-                        elseif ($doc_stat=='rejected') echo '<strong style="color:red">❌ RECHAZADO</strong>';
-                        elseif ($doc_stat=='pending') echo '<strong style="color:orange">⏳ PENDIENTE</strong>';
-                        else echo '<span style="color:#999">Sin revisión</span>';
+                        if ($doc_stat=='verified') echo '<span style="color:green">✅ APROBADO</span>';
+                        elseif ($doc_stat=='rejected') echo '<span style="color:red">❌ RECHAZADO</span>';
+                        elseif ($doc_stat=='pending') echo '<span style="color:#b38f00">⏳ PENDIENTE DE REVISIÓN</span>';
+                        else echo '<span style="color:#999">Sin subir</span>';
                         ?>
                     </div>
 
-                    <?php if($rut || $camara): ?>
-                        <form method="post" style="margin-top:5px; display:flex; gap:5px;">
+                    <?php if(!empty($docs_urls) && is_array($docs_urls)): ?>
+                        <?php foreach($docs_urls as $dk => $durl): ?>
+                            <a href="<?php echo $durl; ?>" target="_blank" class="button button-small" style="margin-bottom:2px;">📄 Ver Doc <?php echo $dk+1; ?></a><br>
+                        <?php endforeach; ?>
+                        
+                        <form method="post" style="margin-top:10px; display:flex; gap:5px;">
                             <input type="hidden" name="target_user_id" value="<?php echo $u->ID; ?>">
                             
-                            <?php if($doc_stat != 'yes'): ?>
+                            <?php if($doc_stat != 'verified'): ?>
                                 <button type="submit" name="doc_action" value="approve" class="button button-primary button-small">✅ Aprobar</button>
                             <?php endif; ?>
                             
                             <?php if($doc_stat != 'rejected'): ?>
-                                <button type="submit" name="doc_action" value="reject" class="button button-secondary button-small" style="color:red; border-color:red;">Rechazar</button>
+                                <button type="submit" name="doc_action" value="reject" class="button button-secondary button-small" style="color:red; border-color:red;" onclick="return confirm('¿Rechazar documentos?');">Rechazar</button>
                             <?php endif; ?>
                         </form>
+
                     <?php else: ?>
-                        <small style="color:#999;">Faltan archivos.</small>
+                        <small style="color:#999;">No hay archivos cargados.</small>
                     <?php endif; ?>
                 </td>
                 <td>
-                    <strong><?php echo $serv_count; ?></strong> categorías.<br>
+                    <?php 
+                        $subs = get_user_meta($u->ID, 'sms_approved_services', true);
+                        echo is_array($subs) ? count($subs) : 0; 
+                    ?> categorías activas.<br>
+                    <?php 
+                        $reqs = get_user_meta($u->ID, 'sms_requested_services', true);
+                        if(is_array($reqs) && count($reqs) > count($subs ?: [])) echo '<small style="color:orange;">(Hay nuevas solicitudes)</small>';
+                    ?>
                 </td>
                 <td style="background:#f9f9f9; border-left:1px solid #ddd;">
                     <div style="font-size:16px; font-weight:bold; margin-bottom:5px;"><?php echo $balance; ?> Créditos</div>
@@ -377,7 +396,6 @@ function sms_tab_providers() {
                         <input type="number" name="credit_amount" placeholder="+/-" style="width:70px;" required>
                         <button type="submit" name="manual_credit_change" class="button button-small">Aplicar</button>
                     </form>
-                    <small style="color:#777;">Ej: <code>50</code> o <code>-10</code></small>
                 </td>
             </tr>
             <?php endforeach; ?>
@@ -551,10 +569,9 @@ function sms_tab_config() {
 }
 
 // ==========================================
-// 8. HOOKS AUXILIARES (PERFIL Y WOOCOMMERCE)
+// 8. HOOKS AUXILIARES
 // ==========================================
 
-// A. Mostrar saldo en perfil de usuario (Read-Only)
 add_action('show_user_profile', 'sms_manual_credits_profile_view');
 add_action('edit_user_profile', 'sms_manual_credits_profile_view');
 
@@ -572,18 +589,15 @@ function sms_manual_credits_profile_view($user) {
     <?php
 }
 
-// B. Procesar Recargas WooCommerce
 add_action('woocommerce_order_status_processing', 'sms_check_order_for_credits');
 add_action('woocommerce_order_status_completed', 'sms_check_order_for_credits');
 
 function sms_check_order_for_credits($order_id) {
     $order = wc_get_order($order_id);
     if (!$order) return;
-
     $user_id = $order->get_user_id();
     if (!$user_id) return; 
 
-    // Candado de seguridad para evitar duplicados
     if (get_post_meta($order_id, '_sms_credits_granted', true) == 'yes') return; 
 
     $target_pid = (int) get_option('sms_product_id');
@@ -603,13 +617,10 @@ function sms_check_order_for_credits($order_id) {
     }
 
     if ($found && $credits_to_add > 0) {
-        $current_balance = (int) get_user_meta($user_id, 'sms_wallet_balance', true);
-        $new_balance = $current_balance + $credits_to_add;
-        
-        update_user_meta($user_id, 'sms_wallet_balance', $new_balance);
+        $curr = (int) get_user_meta($user_id, 'sms_wallet_balance', true);
+        $new = $curr + $credits_to_add;
+        update_user_meta($user_id, 'sms_wallet_balance', $new);
         update_post_meta($order_id, '_sms_credits_granted', 'yes');
-        
-        $order->add_order_note("✅ Sistema B2B: Se añadieron $credits_to_add créditos automáticamente. Nuevo saldo: $new_balance");
+        $order->add_order_note("✅ Sistema B2B: +$credits_to_add créditos. Nuevo saldo: $new");
     }
 }
-
