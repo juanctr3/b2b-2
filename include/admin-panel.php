@@ -259,142 +259,143 @@ function sms_tab_leads() {
 function sms_tab_providers() {
     global $wpdb;
 
-    // A. Procesar Carga Manual de Créditos
-    if (isset($_POST['manual_credit_change'])) {
-        $uid = intval($_POST['target_user_id']);
-        $amount = intval($_POST['credit_amount']);
-        if ($uid > 0 && $amount != 0) {
-            $current = (int) get_user_meta($uid, 'sms_wallet_balance', true);
-            $new = $current + $amount;
-            update_user_meta($uid, 'sms_wallet_balance', $new);
-            echo '<div class="notice notice-success is-dismissible"><p>✅ Saldo actualizado. Nuevo balance: <strong>'.$new.'</strong></p></div>';
-        }
-    }
+    // 1. PROCESAR ACCIONES
+    if (isset($_POST['prov_action'])) {
+        $uid = intval($_POST['user_id']);
+        $prov_phone = get_user_meta($uid, 'sms_whatsapp_notif', true);
 
-    // B. APROBACIÓN/RECHAZO DE DOCUMENTOS (CORREGIDO)
-    if (isset($_POST['doc_action'])) {
-        $uid = intval($_POST['target_user_id']);
-        $action = $_POST['doc_action'];
+        // APROBAR SERVICIOS (Lógica Nueva)
+        if ($_POST['prov_action'] == 'approve_services') {
+            $requested = get_user_meta($uid, 'sms_requested_services', true) ?: [];
+            update_user_meta($uid, 'sms_approved_services', $requested);
+            
+            if(function_exists('sms_send_msg') && $prov_phone) {
+                sms_send_msg($prov_phone, "✅ *Servicios Aprobados*\nTus categorías han sido habilitadas. Empezarás a recibir oportunidades.");
+            }
+            echo '<div class="notice notice-success"><p>✅ Servicios aprobados correctamente.</p></div>';
+        }
+
+        // APROBAR DOCUMENTOS
+        if ($_POST['prov_action'] == 'approve_docs') {
+            update_user_meta($uid, 'sms_docs_status', 'verified');
+            if(function_exists('sms_send_msg') && $prov_phone) {
+                sms_send_msg($prov_phone, "✅ *Documentos Aprobados*\nTu empresa está verificada.");
+            }
+            echo '<div class="notice notice-success"><p>✅ Documentos aprobados.</p></div>';
+        }
+
+        // RECHAZAR DOCUMENTOS
+        if ($_POST['prov_action'] == 'reject_docs') {
+            update_user_meta($uid, 'sms_docs_status', 'rejected');
+            delete_user_meta($uid, 'sms_company_docs'); 
+            if(function_exists('sms_send_msg') && $prov_phone) {
+                sms_send_msg($prov_phone, "❌ *Documentos Rechazados*\nPor favor sube documentos legibles.");
+            }
+            echo '<div class="notice notice-error"><p>❌ Documentos rechazados.</p></div>';
+        }
         
-        // Obtener teléfono para notificar
-        $prov_phone = get_user_meta($uid, 'sms_whatsapp_notif', true) ?: get_user_meta($uid, 'billing_phone', true);
-
-        if ($action == 'approve') {
-            update_user_meta($uid, 'sms_docs_status', 'verified'); // KEY CORREGIDA
-            
-            if(function_exists('sms_send_msg') && $prov_phone) {
-                sms_send_msg($prov_phone, "✅ *Documentos Aprobados*\nTu empresa ha sido verificada. Ya puedes participar en las cotizaciones.");
-            }
-            echo "<div class='notice notice-success is-dismissible'><p>✅ Documentos aprobados. Proveedor notificado.</p></div>";
-        } 
-        elseif ($action == 'reject') {
-            update_user_meta($uid, 'sms_docs_status', 'rejected'); // KEY CORREGIDA
-            delete_user_meta($uid, 'sms_company_docs'); // Opcional: Borrar archivos para obligar a subir nuevos
-            
-            if(function_exists('sms_send_msg') && $prov_phone) {
-                sms_send_msg($prov_phone, "❌ *Documentos Rechazados*\nPor favor ingresa a tu panel y sube documentos legibles (RUT y Cámara de Comercio).");
-            }
-            echo "<div class='notice notice-error is-dismissible'><p>❌ Documentos rechazados. Se solicitó volver a subir.</p></div>";
+        // CAMBIO DE SALDO
+        if ($_POST['prov_action'] == 'manual_credit') {
+             $amt = intval($_POST['credit_amount']);
+             $curr = (int) get_user_meta($uid, 'sms_wallet_balance', true);
+             update_user_meta($uid, 'sms_wallet_balance', $curr + $amt);
+             echo '<div class="notice notice-success"><p>Saldo actualizado.</p></div>';
         }
     }
 
-    // Ordenar: Pendientes arriba
+    // 2. OBTENER PROVEEDORES
     $users = get_users(['orderby' => 'ID', 'order' => 'DESC']); 
-    usort($users, function($a, $b) {
-        $sa = get_user_meta($a->ID, 'sms_docs_status', true);
-        $sb = get_user_meta($b->ID, 'sms_docs_status', true);
-        if ($sa == 'pending' && $sb != 'pending') return -1;
-        if ($sa != 'pending' && $sb == 'pending') return 1;
-        return 0;
-    });
-
     ?>
+    
     <h3>Gestión de Proveedores</h3>
     <table class="widefat striped">
         <thead>
             <tr>
-                <th>Proveedor / Empresa</th>
+                <th>Empresa / Contacto</th>
                 <th>Estado WhatsApp</th>
-                <th>Documentos (Empresa)</th>
-                <th>Servicios Inscritos</th>
-                <th style="background:#e8f0fe; width:200px;">Gestión de Saldo</th>
+                <th>Documentos</th>
+                <th>Servicios (Solicitados vs Aprobados)</th>
+                <th>Saldo</th>
             </tr>
         </thead>
         <tbody>
             <?php foreach($users as $u): 
-                $balance = (int) get_user_meta($u->ID, 'sms_wallet_balance', true);
-                $phone = get_user_meta($u->ID, 'sms_whatsapp_notif', true) ?: get_user_meta($u->ID, 'billing_phone', true);
-                $advisor = get_user_meta($u->ID, 'sms_advisor_name', true);
-                $company_name = get_user_meta($u->ID, 'billing_company', true);
-                $status_wa = get_user_meta($u->ID, 'sms_phone_status', true);
+                $docs_st = get_user_meta($u->ID, 'sms_docs_status', true);
+                $docs = get_user_meta($u->ID, 'sms_company_docs', true);
                 
-                // DATA CORREGIDA
-                $docs_urls = get_user_meta($u->ID, 'sms_company_docs', true);
-                $doc_stat = get_user_meta($u->ID, 'sms_docs_status', true); // KEY CORREGIDA
+                // Comparar servicios
+                $req = get_user_meta($u->ID, 'sms_requested_services', true) ?: [];
+                $app = get_user_meta($u->ID, 'sms_approved_services', true) ?: [];
                 
-                $style_row = ($doc_stat == 'pending') ? 'background:#fff9db;' : '';
+                // Detectar discrepancia (pendientes)
+                $has_pending_servs = (count($req) > count($app) || array_diff($req, $app));
+                
+                // Color de fondo si hay algo pendiente
+                $bg_style = ($has_pending_servs || $docs_st == 'pending') ? 'background:#fff9e6;' : '';
             ?>
-            <tr style="<?php echo $style_row; ?>">
+            <tr style="<?php echo $bg_style; ?>">
                 <td>
-                    <strong><?php echo esc_html($company_name ?: $u->display_name); ?></strong><br>
-                    <small>👤 <?php echo $advisor ? $advisor : 'Sin asesor'; ?></small><br>
-                    <small>📞 <?php echo $phone ? $phone : '-'; ?></small><br>
-                    <small>📧 <?php echo $u->user_email; ?></small>
+                    <strong><?php echo get_user_meta($u->ID, 'sms_commercial_name', true) ?: $u->display_name; ?></strong><br>
+                    <?php echo $u->user_email; ?><br>
+                    📞 <?php echo get_user_meta($u->ID, 'billing_phone', true); ?>
                 </td>
+                
                 <td>
-                    <?php echo ($status_wa=='verified') 
-                        ? '<span class="badge" style="background:#d4edda; color:#155724; padding:3px 6px; border-radius:4px;">✅ Verificado</span>' 
-                        : '<span class="badge" style="background:#f8d7da; color:#721c24; padding:3px 6px; border-radius:4px;">⏳ Pendiente</span>'; 
-                    ?>
-                </td>
-                <td>
-                    <div style="margin-bottom:5px; font-weight:bold;">
-                        Estado: 
-                        <?php 
-                        if ($doc_stat=='verified') echo '<span style="color:green">✅ APROBADO</span>';
-                        elseif ($doc_stat=='rejected') echo '<span style="color:red">❌ RECHAZADO</span>';
-                        elseif ($doc_stat=='pending') echo '<span style="color:#b38f00">⏳ PENDIENTE DE REVISIÓN</span>';
-                        else echo '<span style="color:#999">Sin subir</span>';
-                        ?>
-                    </div>
-
-                    <?php if(!empty($docs_urls) && is_array($docs_urls)): ?>
-                        <?php foreach($docs_urls as $dk => $durl): ?>
-                            <a href="<?php echo $durl; ?>" target="_blank" class="button button-small" style="margin-bottom:2px;">📄 Ver Doc <?php echo $dk+1; ?></a><br>
-                        <?php endforeach; ?>
-                        
-                        <form method="post" style="margin-top:10px; display:flex; gap:5px;">
-                            <input type="hidden" name="target_user_id" value="<?php echo $u->ID; ?>">
-                            
-                            <?php if($doc_stat != 'verified'): ?>
-                                <button type="submit" name="doc_action" value="approve" class="button button-primary button-small">✅ Aprobar</button>
-                            <?php endif; ?>
-                            
-                            <?php if($doc_stat != 'rejected'): ?>
-                                <button type="submit" name="doc_action" value="reject" class="button button-secondary button-small" style="color:red; border-color:red;" onclick="return confirm('¿Rechazar documentos?');">Rechazar</button>
-                            <?php endif; ?>
-                        </form>
-
+                    <?php $wa_st = get_user_meta($u->ID, 'sms_phone_status', true); ?>
+                    <?php if($wa_st=='verified'): ?>
+                        <span style="color:green; font-weight:bold;">✅ Activo</span><br>
+                        <small><?php echo get_user_meta($u->ID, 'sms_whatsapp_notif', true); ?></small>
                     <?php else: ?>
-                        <small style="color:#999;">No hay archivos cargados.</small>
+                        <span style="color:red;">❌ Pendiente</span>
                     <?php endif; ?>
                 </td>
+
                 <td>
                     <?php 
-                        $subs = get_user_meta($u->ID, 'sms_approved_services', true);
-                        echo is_array($subs) ? count($subs) : 0; 
-                    ?> categorías activas.<br>
-                    <?php 
-                        $reqs = get_user_meta($u->ID, 'sms_requested_services', true);
-                        if(is_array($reqs) && count($reqs) > count($subs ?: [])) echo '<small style="color:orange;">(Hay nuevas solicitudes)</small>';
+                        if($docs_st=='verified') echo '<strong style="color:green">Aprobado</strong>';
+                        elseif($docs_st=='pending') echo '<strong style="color:orange">⏳ Revisión Pendiente</strong>';
+                        elseif($docs_st=='rejected') echo '<strong style="color:red">Rechazado</strong>';
+                        else echo '<span style="color:#ccc">-</span>';
                     ?>
+                    
+                    <?php if(!empty($docs) && is_array($docs)): ?>
+                        <div style="margin:5px 0;">
+                        <?php foreach($docs as $k=>$d): ?>
+                            <a href="<?php echo $d; ?>" target="_blank" class="button button-small">📄 Ver Doc</a>
+                        <?php endforeach; ?>
+                        </div>
+                        
+                        <?php if($docs_st == 'pending'): ?>
+                        <form method="post" style="display:flex; gap:5px;">
+                            <input type="hidden" name="user_id" value="<?php echo $u->ID; ?>">
+                            <button type="submit" name="prov_action" value="approve_docs" class="button button-primary button-small">✅ Aprobar</button>
+                            <button type="submit" name="prov_action" value="reject_docs" class="button button-link-delete" style="color:red;">Rechazar</button>
+                        </form>
+                        <?php endif; ?>
+                    <?php endif; ?>
                 </td>
-                <td style="background:#f9f9f9; border-left:1px solid #ddd;">
-                    <div style="font-size:16px; font-weight:bold; margin-bottom:5px;"><?php echo $balance; ?> Créditos</div>
-                    <form method="post" style="display:flex; align-items:center; gap:5px;">
-                        <input type="hidden" name="target_user_id" value="<?php echo $u->ID; ?>">
-                        <input type="number" name="credit_amount" placeholder="+/-" style="width:70px;" required>
-                        <button type="submit" name="manual_credit_change" class="button button-small">Aplicar</button>
+
+                <td>
+                    <div>Solicitados: <strong><?php echo count($req); ?></strong></div>
+                    <div>Aprobados: <strong><?php echo count($app); ?></strong></div>
+                    
+                    <?php if($has_pending_servs): ?>
+                        <div style="color:#d63638; font-weight:bold; margin-top:5px; font-size:11px;">⚠️ Hay nuevos servicios</div>
+                        <form method="post" style="margin-top:5px;">
+                            <input type="hidden" name="user_id" value="<?php echo $u->ID; ?>">
+                            <button type="submit" name="prov_action" value="approve_services" class="button button-small button-primary">✅ Aprobar Todos</button>
+                        </form>
+                    <?php else: ?>
+                        <span style="color:green; font-size:11px;">✔ Todo al día</span>
+                    <?php endif; ?>
+                </td>
+                
+                <td>
+                    <strong><?php echo (int)get_user_meta($u->ID, 'sms_wallet_balance', true); ?> cr</strong>
+                    <form method="post" style="margin-top:5px;">
+                        <input type="hidden" name="user_id" value="<?php echo $u->ID; ?>">
+                        <input type="number" name="credit_amount" style="width:50px; height:25px;" placeholder="+/-">
+                        <button type="submit" name="prov_action" value="manual_credit" class="button button-small">Ok</button>
                     </form>
                 </td>
             </tr>
@@ -624,3 +625,4 @@ function sms_check_order_for_credits($order_id) {
         $order->add_order_note("✅ Sistema B2B: +$credits_to_add créditos. Nuevo saldo: $new");
     }
 }
+
