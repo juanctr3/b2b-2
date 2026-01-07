@@ -29,16 +29,33 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         update_user_meta($uid, 'sms_advisor_name', sanitize_text_field($_POST['p_advisor']));
         update_user_meta($uid, 'sms_company_desc', sanitize_textarea_field($_POST['p_desc']));
 
-        // Servicios
+        // Guardar servicios solicitados
         $requested_pages = $_POST['p_servs'] ?? [];
         update_user_meta($uid, 'sms_requested_services', $requested_pages);
         
-        // Asegurar array de aprobados
-        if(!get_user_meta($uid, 'sms_approved_services', true)) {
-            update_user_meta($uid, 'sms_approved_services', []);
+        // Lógica de Verificación de WhatsApp (NUEVA)
+        $old_wa = get_user_meta($uid, 'sms_whatsapp_notif', true);
+        $current_status = get_user_meta($uid, 'sms_phone_status', true);
+        $new_wa = sanitize_text_field($_POST['p_whatsapp']);
+        $new_wa_clean = str_replace([' ','+'], '', $new_wa);
+        
+        // Guardar el nuevo número
+        update_user_meta($uid, 'sms_whatsapp_notif', $new_wa_clean);
+
+        $msg_extra = "";
+        // Si el número cambió o nunca se ha verificado, pedir confirmación
+        if ($new_wa_clean && ($new_wa_clean !== $old_wa || $current_status !== 'verified')) {
+            update_user_meta($uid, 'sms_phone_status', 'pending');
+            
+            if (function_exists('sms_send_msg')) {
+                $site_name = get_bloginfo('name');
+                $txt = "🔐 *Activación de Notificaciones*\n\nHola, para recibir alertas de clientes de *$site_name*, por favor responde a este mensaje escribiendo:\n\n*CONFIRMADO*";
+                sms_send_msg($new_wa_clean, $txt);
+                $msg_extra = "<br>📨 <strong>¡Atención!</strong> Te enviamos un WhatsApp. Responde <b>CONFIRMADO</b> en tu celular para activar las notificaciones.";
+            }
         }
 
-        echo '<div class="woocommerce-message">✅ Perfil de empresa actualizado correctamente.</div>';
+        echo '<div class="woocommerce-message">✅ Perfil actualizado. ' . $msg_extra . '</div>';
     }
 
     // B. SOLICITUD SERVICIO
@@ -282,4 +299,5 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     </div>
     <?php
 });
+
 
