@@ -25,11 +25,11 @@ function sms_send_msg($to, $msg) {
         "priority"  => 1
     ];
 
-    // 4. Envío usando x-www-form-urlencoded (Configuración probada)
+    // 4. Envío usando x-www-form-urlencoded
     $response = wp_remote_post($url, [
         'body'      => $data, 
         'timeout'   => 20,
-        'blocking'  => true, // Importante: TRUE para asegurar el envío
+        'blocking'  => true, 
         'headers'   => [
             'Content-Type' => 'application/x-www-form-urlencoded; charset=utf-8'
         ]
@@ -95,7 +95,6 @@ function sms_smart_notification($lead_id) {
     elseif ($remaining < $max_quotas) $urgency_txt = "⚡ *Solo quedan $remaining cupos.*";
 
     // B. Detectar Tipo de Cliente (Empresa o Persona)
-    // Asumimos que si no es 'Particular' ni '(Persona Natural)', es una empresa.
     $is_company = ($lead->client_company !== 'Particular' && $lead->client_company !== '(Persona Natural)');
     $type_label = $is_company ? "🏢 *Cliente: Empresa*" : "👤 *Cliente: Persona Natural*";
 
@@ -137,7 +136,7 @@ function sms_smart_notification($lead_id) {
 }
 
 /**
- * 4. WEBHOOK: CEREBRO DE INTERACCIÓN (CON BÚSQUEDA FLEXIBLE)
+ * 4. WEBHOOK: CEREBRO DE INTERACCIÓN (CORREGIDO PARA ESPACIOS)
  */
 add_action('rest_api_init', function () {
     register_rest_route('smsenlinea/v1', '/webhook', [
@@ -155,13 +154,12 @@ function sms_handle_incoming_interaction($req) {
 
     if(isset($params['type']) && $params['type'] == 'whatsapp') {
         $msg_body = trim(strtoupper($params['data']['message'])); 
-        // 1. Obtener número limpio
+        // 1. Obtener número limpio (API envía 57300...)
         $phone_sender = preg_replace('/[^0-9]/', '', $params['data']['phone']); 
         
         if(strlen($phone_sender) < 7) return new WP_REST_Response('Invalid Phone', 400);
 
         // 2. Definir criterio de búsqueda FLEXIBLE (últimos 10 dígitos)
-        // Esto soluciona el problema de que no capte el mensaje si el prefijo cambia (57 vs +57)
         $search_term = (strlen($phone_sender) > 10) ? substr($phone_sender, -10) : $phone_sender;
 
         // Idempotencia
@@ -173,7 +171,6 @@ function sms_handle_incoming_interaction($req) {
         // A. PROVEEDOR: CONFIRMACIÓN DE WHATSAPP
         // --------------------------------------------------------
         if ($msg_body === 'CONFIRMADO') {
-            // Buscamos usuario usando LIKE con los últimos dígitos
             $users = get_users(['meta_query' => [['key' => 'sms_whatsapp_notif', 'value' => $search_term, 'compare' => 'LIKE']], 'number' => 1]);
             
             if (!empty($users)) {
@@ -190,7 +187,6 @@ function sms_handle_incoming_interaction($req) {
                     update_user_meta($u->ID, '_sms_bonus_given', 'yes');
                     $bonus_msg = "\n🎁 *¡Recibiste $bonus créditos de regalo!*";
                 }
-
                 sms_send_msg($phone_sender, "$e_check *¡Notificaciones Activadas!*\nTu cuenta de proveedor está lista.$bonus_msg");
             }
         }
@@ -200,7 +196,6 @@ function sms_handle_incoming_interaction($req) {
         // --------------------------------------------------------
         elseif (preg_match('/^ACEPTO\s+(\d+)/i', $msg_body, $matches)) {
             $lead_id = intval($matches[1]);
-            // Búsqueda flexible de usuario
             $users = get_users(['meta_query' => [['key' => 'sms_whatsapp_notif', 'value' => $search_term, 'compare' => 'LIKE']], 'number' => 1]);
             
             if(!empty($users)) {
@@ -217,7 +212,7 @@ function sms_handle_incoming_interaction($req) {
                 if($lead && in_array($lead->service_page_id, $approved_services)) {
                     $already = $wpdb->get_var("SELECT id FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id=$lead_id AND provider_user_id={$u->ID}");
                     
-                    // Validar Cupos (Nuevo)
+                    // Validar Cupos
                     $unlocks_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id=$lead_id");
                     $max_quotas = (int) $lead->max_quotas ?: 3;
 
@@ -250,9 +245,15 @@ function sms_handle_incoming_interaction($req) {
         // C. CLIENTE: VERIFICACIÓN (SOLICITA CÓDIGO)
         // --------------------------------------------------------
         elseif (strpos($msg_body, 'WHATSAPP') !== false) {
-            // SOLUCIÓN CLAVE: Búsqueda flexible usando LIKE '%... últimos dígitos'
-            // Esto arregla el "no capta el mensaje"
-            $lead = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE client_phone LIKE '%$search_term' AND is_verified = 0 ORDER BY created_at DESC LIMIT 1");
+            // CORRECCIÓN CRÍTICA: Usamos REPLACE para ignorar espacios en la BD si los hubiera.
+            // Esto permite que '+57 300 123' (BD) coincida con '300123' (WhatsApp)
+            
+            $sql = "SELECT * FROM {$wpdb->prefix}sms_leads 
+                    WHERE REPLACE(client_phone, ' ', '') LIKE '%$search_term' 
+                    AND is_verified = 0 
+                    ORDER BY created_at DESC LIMIT 1";
+                    
+            $lead = $wpdb->get_row($sql);
             
             if ($lead) {
                 $otp_key = 'sms_otp_lock_' . $phone_sender;
@@ -261,8 +262,8 @@ function sms_handle_incoming_interaction($req) {
                     set_transient($otp_key, true, 45);
                 }
             } else {
-                // Debug opcional: Si esto pasa, significa que en la BD el número es muy diferente al que llegó
-                // error_log("SMS Debug: No se encontró Lead para $phone_sender usando término $search_term");
+                // Log de error para depuración
+                error_log("SMS Debug: Mensaje WHATSAPP recibido de $phone_sender ($search_term) pero no se encontró lead pendiente. Verifica si el número tiene espacios en la BD.");
             }
         }
         
@@ -270,8 +271,12 @@ function sms_handle_incoming_interaction($req) {
         // D. CLIENTE: VERIFICACIÓN (PIDE EMAIL)
         // --------------------------------------------------------
         elseif (strpos($msg_body, 'EMAIL') !== false) {
-            // Búsqueda flexible también aquí
-            $lead = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE client_phone LIKE '%$search_term' AND is_verified = 0 ORDER BY created_at DESC LIMIT 1");
+            $sql = "SELECT * FROM {$wpdb->prefix}sms_leads 
+                    WHERE REPLACE(client_phone, ' ', '') LIKE '%$search_term' 
+                    AND is_verified = 0 
+                    ORDER BY created_at DESC LIMIT 1";
+
+            $lead = $wpdb->get_row($sql);
             
             if ($lead && is_email($lead->client_email)) {
                 $mail_key = 'sms_mail_lock_' . $phone_sender;
