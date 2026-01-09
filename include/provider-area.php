@@ -19,49 +19,59 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     // A. GUARDAR PERFIL Y VERIFICACIÓN WHATSAPP
     // ==========================================
     if (isset($_POST['save_provider_profile'])) {
-        // 1. Obtener datos previos
+        // 1. Obtener datos previos para detectar cambios
         $old_wa = get_user_meta($uid, 'sms_whatsapp_notif', true);
         
-        // 2. Construir nuevo número
+        // 2. Construir el nuevo número (País + Celular)
         $country_code = sanitize_text_field($_POST['p_country_code']);
         $phone_raw = sanitize_text_field($_POST['p_whatsapp_raw']);
         $new_wa_clean = $country_code . preg_replace('/[^0-9]/', '', $phone_raw);
 
-        // 3. Guardar Datos
+        // 3. Guardar Datos Generales
         update_user_meta($uid, 'billing_company', sanitize_text_field($_POST['p_razon_social']));
         update_user_meta($uid, 'sms_commercial_name', sanitize_text_field($_POST['p_commercial_name']));
         update_user_meta($uid, 'sms_nit', sanitize_text_field($_POST['p_nit']));
+        
+        // Contacto
         update_user_meta($uid, 'billing_address_1', sanitize_text_field($_POST['p_address']));
-        update_user_meta($uid, 'billing_phone', sanitize_text_field($_POST['p_phone']));
         update_user_meta($uid, 'billing_email', sanitize_email($_POST['p_email']));
+        
+        // Guardamos el WhatsApp también como 'billing_phone' para compatibilidad
         update_user_meta($uid, 'billing_phone', $new_wa_clean); 
         update_user_meta($uid, 'sms_whatsapp_notif', $new_wa_clean);
+
+        // Detalles Adicionales
         update_user_meta($uid, 'sms_advisor_name', sanitize_text_field($_POST['p_advisor']));
         update_user_meta($uid, 'sms_company_desc', sanitize_textarea_field($_POST['p_desc']));
 
-        // Servicios Solicitados
+        // Servicios Solicitados (Checkboxes)
         $requested_pages = $_POST['p_servs'] ?? [];
         update_user_meta($uid, 'sms_requested_services', $requested_pages);
         
+        // Asegurar array de aprobados
         if(!get_user_meta($uid, 'sms_approved_services', true)) {
             update_user_meta($uid, 'sms_approved_services', []);
         }
 
-        // 4. Lógica Verificación WhatsApp
+        // 4. LÓGICA DE VERIFICACIÓN DE WHATSAPP
         $msg_extra = "";
+        
         if ($new_wa_clean && $new_wa_clean !== $old_wa) {
+            // Si el número cambió, forzamos re-verificación
             update_user_meta($uid, 'sms_phone_status', 'pending');
+            
             if (function_exists('sms_send_msg')) {
                 $site_name = get_bloginfo('name');
-                $txt = "🔐 *Verificación de Seguridad*\n\nHola, detectamos un cambio de número en *$site_name*.\nResponde: *CONFIRMADO*";
+                $txt = "🔐 *Verificación de Seguridad*\n\nHola, hemos detectado un cambio de número en *$site_name*.\n\nPara activar las notificaciones, responde:\n*CONFIRMADO*";
                 sms_send_msg($new_wa_clean, $txt);
                 $msg_extra = "<br>📨 <strong>¡Número Actualizado!</strong> Te enviamos un WhatsApp. Responde <b>CONFIRMADO</b> para activarlo.";
             }
-        } elseif (get_user_meta($uid, 'sms_phone_status', true) !== 'verified') {
-            $msg_extra = "<br>⚠️ Tu WhatsApp aún no está verificado.";
+        } 
+        elseif (get_user_meta($uid, 'sms_phone_status', true) !== 'verified') {
+            $msg_extra = "<br>⚠️ Tu WhatsApp aún no está verificado. Busca nuestro mensaje y responde <b>CONFIRMADO</b>.";
         }
 
-        echo '<div class="woocommerce-message">✅ Perfil actualizado.' . $msg_extra . '</div>';
+        echo '<div class="woocommerce-message">✅ Perfil actualizado correctamente.' . $msg_extra . '</div>';
     }
 
     // ==========================================
@@ -72,6 +82,7 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         if($serv_name) {
             $exists = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$wpdb->prefix}sms_service_requests WHERE provider_user_id = %d AND requested_service = %s", $uid, $serv_name));
             if(!$exists) {
+                // Insertar en BD
                 $wpdb->insert("{$wpdb->prefix}sms_service_requests", ['provider_user_id' => $uid, 'requested_service' => $serv_name]);
                 
                 // NOTIFICAR AL ADMIN
@@ -99,9 +110,16 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         require_once(ABSPATH . 'wp-admin/includes/file.php');
         $files = $_FILES['p_docs'];
         $uploaded_count = 0;
+        
         foreach ($files['name'] as $key => $value) {
             if ($files['name'][$key]) {
-                $file = ['name' => $files['name'][$key], 'type' => $files['type'][$key], 'tmp_name' => $files['tmp_name'][$key], 'error' => $files['error'][$key], 'size' => $files['size'][$key]];
+                $file = [
+                    'name'     => $files['name'][$key],
+                    'type'     => $files['type'][$key],
+                    'tmp_name' => $files['tmp_name'][$key],
+                    'error'    => $files['error'][$key],
+                    'size'     => $files['size'][$key]
+                ];
                 $upload = wp_handle_upload($file, ['test_form' => false]);
                 if (!isset($upload['error']) && isset($upload['url'])) {
                     $current_docs = get_user_meta($uid, 'sms_company_docs', true) ?: [];
@@ -111,46 +129,56 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                 }
             }
         }
+
         if ($uploaded_count > 0) {
             update_user_meta($uid, 'sms_docs_status', 'pending');
+            
+            // Notificar Admin
             $admin_phone = get_option('sms_admin_phone');
             $prov_name = wp_get_current_user()->display_name;
             if(function_exists('sms_send_msg') && $admin_phone) {
                 sms_send_msg($admin_phone, "📂 *Admin:* El proveedor $prov_name ha subido documentos.");
             }
+            
             echo "<script>window.location.href = '" . wc_get_account_endpoint_url('zona-proveedor') . "?docs_uploaded=1';</script>";
             exit;
         }
     }
+
     if(isset($_GET['docs_uploaded'])) echo '<div class="woocommerce-message">✅ Documentos enviados a revisión.</div>';
 
-    // DATOS DE LECTURA
+    // ==========================================
+    // D. PREPARACIÓN DE DATOS
+    // ==========================================
     $active_pages_ids = get_option('sms_active_service_pages', []);
     $approved_servs = get_user_meta($uid, 'sms_approved_services', true) ?: [];
     $requested_servs = get_user_meta($uid, 'sms_requested_services', true) ?: [];
     $balance = (int) get_user_meta($uid, 'sms_wallet_balance', true);
     $docs_urls = get_user_meta($uid, 'sms_company_docs', true) ?: [];
 
-    // Form data
+    // Datos del formulario
     $p_razon = get_user_meta($uid, 'billing_company', true);
     $p_comercial = get_user_meta($uid, 'sms_commercial_name', true);
     $p_nit = get_user_meta($uid, 'sms_nit', true);
     $p_address = get_user_meta($uid, 'billing_address_1', true);
-    $p_phone = get_user_meta($uid, 'billing_phone', true);
-    $p_whatsapp = get_user_meta($uid, 'sms_whatsapp_notif', true);
     $p_email = get_user_meta($uid, 'billing_email', true) ?: wp_get_current_user()->user_email;
     $p_advisor = get_user_meta($uid, 'sms_advisor_name', true);
     $p_desc = get_user_meta($uid, 'sms_company_desc', true);
+    
+    // WhatsApp y Estado
+    $full_whatsapp = get_user_meta($uid, 'sms_whatsapp_notif', true);
     $wa_status = get_user_meta($uid, 'sms_phone_status', true);
 
-    // OBTENER LEADS
+    // OBTENER LEADS (Solo de servicios aprobados)
     $leads = [];
     if (!empty($approved_servs)) {
         $ids_str = implode(',', array_map('intval', $approved_servs));
         $leads = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}sms_leads WHERE service_page_id IN ($ids_str) AND status = 'approved' ORDER BY created_at DESC LIMIT 50");
     }
     
-    // UI
+    // ==========================================
+    // E. RENDERIZADO (HTML)
+    // ==========================================
     ?>
     <style>
         .sms-layout { display: flex; flex-wrap: wrap; gap: 25px; } 
@@ -185,26 +213,46 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                         </div>
                         <span style="font-size:12px; color:#666;">📍 <?php echo $l->city; ?></span>
                         <p style="margin:5px 0;"><?php echo wp_trim_words($l->requirement, 15); ?></p>
-                        <a href="<?php echo site_url('/oportunidad?lid='.$l->id); ?>" class="button button-primary button-small">Ver Detalles</a>
+                        <a href="<?php echo site_url('/oportunidad?lid='.$l->id); ?>" class="button button-primary button-small">Ver Detalles y Contactar</a>
                     </div>
                 <?php endforeach; ?>
                 </div>
             <?php endif; ?>
 
             <div class="sms-card">
-                <h3>🏢 Perfil de Empresa</h3>
+                <h3>🏢 Perfil de Empresa (Público)</h3>
                 <form method="post">
                     <div class="row-2-col">
-                        <div class="sms-input-group"><label>Razón Social</label><input type="text" name="p_razon_social" value="<?php echo esc_attr($p_razon); ?>" required></div>
-                        <div class="sms-input-group"><label>NIT</label><input type="text" name="p_nit" value="<?php echo esc_attr($p_nit); ?>" required></div>
+                        <div class="sms-input-group">
+                            <label>Razón Social (Cámara de Comercio)</label>
+                            <input type="text" name="p_razon_social" value="<?php echo esc_attr($p_razon); ?>" required>
+                        </div>
+                        <div class="sms-input-group">
+                            <label>NIT / Identificación Fiscal</label>
+                            <input type="text" name="p_nit" value="<?php echo esc_attr($p_nit); ?>" required>
+                        </div>
                     </div>
-                    <div class="sms-input-group"><label>Nombre Comercial</label><input type="text" name="p_commercial_name" value="<?php echo esc_attr($p_comercial); ?>" required></div>
-                    <div class="row-2-col">
-                         <div class="sms-input-group"><label>Dirección</label><input type="text" name="p_address" value="<?php echo esc_attr($p_address); ?>"></div>
-                         <div class="sms-input-group"><label>Email</label><input type="email" name="p_email" value="<?php echo esc_attr($p_email); ?>"></div>
-                    </div>
+
                     <div class="sms-input-group">
-                        <label>WhatsApp (Notificaciones) <?php echo ($wa_status=='verified') ? '<span style="color:green">✅</span>' : '<span style="color:red">⚠️</span>'; ?></label>
+                        <label>Nombre Comercial (Marca visible al cliente)</label>
+                        <input type="text" name="p_commercial_name" value="<?php echo esc_attr($p_comercial); ?>" placeholder="Ej: Soluciones Rápidas SAS" required>
+                    </div>
+
+                    <div class="row-2-col">
+                         <div class="sms-input-group">
+                            <label>Dirección Física</label>
+                            <input type="text" name="p_address" value="<?php echo esc_attr($p_address); ?>">
+                        </div>
+                        <div class="sms-input-group">
+                            <label>Email Corporativo</label>
+                            <input type="email" name="p_email" value="<?php echo esc_attr($p_email); ?>">
+                        </div>
+                    </div>
+
+                    <div class="sms-input-group">
+                        <label>WhatsApp para Notificaciones y Clientes 
+                            <?php echo ($wa_status=='verified') ? '<span style="color:green">✅ (Verificado)</span>' : '<span style="color:red; font-size:11px;">⚠️ (Sin verificar)</span>'; ?>
+                        </label>
                         <div style="display:flex; gap:10px;">
                             <select name="p_country_code" style="width:130px; flex-shrink:0;">
                                 <option value="57">🇨🇴 +57</option>
@@ -215,16 +263,27 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                                 <option value="34">🇪🇸 +34</option>
                                 <option value="1">🇺🇸 +1</option>
                             </select>
-                            <input type="number" name="p_whatsapp_raw" value="<?php echo preg_replace('/^(57|52|51|54|56|34|1)/', '', $p_whatsapp); ?>" required>
+                            <input type="number" name="p_whatsapp_raw" value="<?php 
+                                // Limpiamos visualmente el indicativo
+                                echo preg_replace('/^(57|52|51|54|56|34|1)/', '', $full_whatsapp); 
+                            ?>" placeholder="Ej: 3001234567" required>
                         </div>
                     </div>
-                    <div class="sms-input-group"><label>Asesor</label><input type="text" name="p_advisor" value="<?php echo esc_attr($p_advisor); ?>"></div>
-                    <div class="sms-input-group"><label>Descripción</label><textarea name="p_desc" rows="3"><?php echo esc_textarea($p_desc); ?></textarea></div>
+
+                    <div class="sms-input-group">
+                        <label>Nombre del Asesor Encargado</label>
+                        <input type="text" name="p_advisor" value="<?php echo esc_attr($p_advisor); ?>">
+                    </div>
+
+                    <div class="sms-input-group">
+                        <label>Descripción de la Empresa (Experiencia, Servicios...)</label>
+                        <textarea name="p_desc" rows="3"><?php echo esc_textarea($p_desc); ?></textarea>
+                    </div>
 
                     <hr>
                     <h4>⚙️ Selección de Servicios</h4>
                     
-                    <input type="text" id="searchServ" onkeyup="filterServices()" placeholder="🔍 Buscar servicio..." style="margin-bottom:10px; border-color:#007cba;">
+                    <input type="text" id="searchServ" onkeyup="filterServices()" placeholder="🔍 Escribe para buscar categoría..." style="margin-bottom:10px; border-color:#007cba;">
 
                     <div id="servList" style="height:200px; overflow-y:scroll; border:1px solid #eee; padding:10px; margin-bottom:15px; background:#f9f9f9; border-radius:4px;">
                         <?php foreach($active_pages_ids as $pid): 
@@ -242,22 +301,24 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                         <?php endforeach; ?>
                     </div>
 
-                    <div style="background:#e8f0fe; padding:10px; border-radius:5px; margin-bottom:15px; font-size:12px;">
-                        <strong>¿No encuentras tu categoría?</strong> Solicítala aquí:
-                        <div style="display:flex; gap:5px; margin-top:5px;">
+                    <div style="background:#e8f0fe; padding:15px; border-radius:8px; margin-bottom:20px; border:1px solid #b8daff;">
+                        <strong style="display:block; margin-bottom:5px; color:#004085;">¿No encuentras tu categoría?</strong>
+                        <div style="display:flex; gap:10px;">
                             <input type="text" name="new_service_name" placeholder="Ej: Mantenimiento de Ascensores" style="flex:1;">
-                            <button type="submit" name="req_new_service" class="button button-small">Solicitar</button>
+                            <button type="submit" name="req_new_service" class="button button-small" style="background:#004085; color:#fff; border:none;">Solicitar Creación</button>
                         </div>
                     </div>
 
-                    <button type="submit" name="save_provider_profile" class="button button-primary" style="width:100%;">💾 Guardar Perfil Completo</button>
+                    <button type="submit" name="save_provider_profile" class="button button-primary" style="width:100%; padding:10px;">💾 Guardar Perfil Completo</button>
                 </form>
             </div>
         </div>
 
         <div class="sms-col-side">
+            
             <div class="sms-card" style="text-align:center; border: 2px solid #007cba;">
                 <h4 style="margin-top:0;">🌐 Tu Presencia Digital</h4>
+                <p style="font-size:12px;">Así te ven los clientes:</p>
                 <a href="<?php echo site_url('/perfil-proveedor?uid='.$uid); ?>" target="_blank" class="button button-primary" style="width:100%;">👁️ Ver mi Perfil Público</a>
             </div>
 
@@ -269,22 +330,31 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
 
             <div class="sms-card">
                 <h4>📂 Documentación Legal</h4>
+                <p style="font-size:12px;">Requisito: RUT y Cámara de Comercio vigentes.</p>
+                
                 <?php if($docs_status == 'verified'): ?>
-                    <div style="color:green; background:#d4edda; padding:10px; border-radius:5px;">✅ Aprobado</div>
+                    <div style="color:green; background:#d4edda; padding:10px; border-radius:5px; border:1px solid #c3e6cb;">
+                        <strong>✅ Aprobado</strong>
+                        <p style="font-size:11px; margin:5px 0;">Tu empresa está verificada.</p>
+                    </div>
                 <?php else: ?>
+                    
                     <?php if($docs_status == 'pending'): ?>
                         <div style="color:#856404; background:#fff3cd; padding:10px; border-radius:5px; margin-bottom:10px;">⏳ En Revisión</div>
                     <?php endif; ?>
+
                     <form method="post" enctype="multipart/form-data">
-                        <input type="file" name="p_docs[]" multiple accept=".pdf" style="font-size:12px; margin-bottom:10px;">
+                        <input type="file" name="p_docs[]" multiple accept=".pdf,.jpg,.png" style="font-size:12px; margin-bottom:10px;">
                         <button type="submit" class="button button-small">📤 Subir Archivos</button>
                     </form>
+
                 <?php endif; ?>
-                
-                <div class="doc-list" style="margin-top:10px;">
+
+                <div class="doc-list">
                     <?php if(!empty($docs_urls)): foreach($docs_urls as $idx => $url): ?>
-                        <div class="doc-item" style="background:#f1f1f1; padding:5px; margin-bottom:2px; font-size:11px; display:flex; justify-content:space-between;">
-                            <span>Doc #<?php echo $idx+1; ?></span><a href="<?php echo $url; ?>" target="_blank">Ver</a>
+                        <div class="doc-item">
+                            <span>Doc #<?php echo $idx+1; ?></span>
+                            <a href="<?php echo $url; ?>" target="_blank">Ver</a>
                         </div>
                     <?php endforeach; endif; ?>
                 </div>
@@ -299,8 +369,8 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
             var div = document.getElementById("servList");
             var labels = div.getElementsByTagName("label");
             for (var i = 0; i < labels.length; i++) {
-                var txt = labels[i].textContent || labels[i].innerText;
-                if (txt.toUpperCase().indexOf(filter) > -1) {
+                var txtValue = labels[i].textContent || labels[i].innerText;
+                if (txtValue.toUpperCase().indexOf(filter) > -1) {
                     labels[i].style.display = "";
                 } else {
                     labels[i].style.display = "none";
