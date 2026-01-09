@@ -203,10 +203,19 @@ function sms_render_frontend() {
 
             <div id="smsStepWaitInteraction" style="display:none; text-align:center;">
                 <h3 style="color:#007cba;">&#128172; Revisa tu WhatsApp</h3>
-                <p>Te hemos enviado un mensaje de confirmación.</p>
+                
+                <p>Te hemos enviado un mensaje al:<br><strong id="smsTargetPhone" style="font-size:16px; color:#333;">...</strong></p>
+                
                 <div style="background:#e8f0fe; padding:15px; border-radius:8px; margin:15px 0; border:1px solid #b8daff;">
-                    <p style="margin:0; font-weight:bold;">Para recibir el CÓDIGO, responde: <br><span style="font-size:24px; color:#004085; font-weight:900;">WHATSAPP</span></p>
+                    <p style="margin:0; font-weight:bold; font-size:14px; color:#555;">Responde al mensaje con la opción:</p>
+                    <div style="display:flex; justify-content:center; gap:10px; margin-top:10px;">
+                        <span style="background:#fff; padding:5px 10px; border-radius:5px; font-weight:bold; color:#004085; border:1px solid #b8daff;">WHATSAPP</span>
+                        <span style="align-self:center; font-size:12px;">ó</span>
+                        <span style="background:#fff; padding:5px 10px; border-radius:5px; font-weight:bold; color:#004085; border:1px solid #b8daff;">EMAIL</span>
+                    </div>
+                    <p style="margin:10px 0 0 0; font-size:11px; color:#666;">Para recibir tu código de verificación.</p>
                 </div>
+                
                 <div style="margin:20px auto;" class="sms-animate-pulse">⏳</div>
                 <p style="font-size:12px; color:#666;">Esperando tu respuesta...</p>
                 
@@ -305,7 +314,11 @@ function sms_render_frontend() {
             btn.innerHTML = 'Enviando...'; btn.disabled = true;
 
             var fd = new FormData(this);
-            fd.append('phone', document.getElementById('smsPhoneCode').value + fd.get('phone_raw'));
+            var fullPhone = document.getElementById('smsPhoneCode').value + document.getElementById('inputPhone').value;
+            fd.append('phone', fullPhone);
+
+            // CAMBIO: Mostrar número en la siguiente pantalla
+            document.getElementById('smsTargetPhone').innerText = fullPhone;
 
             fetch('<?php echo admin_url('admin-ajax.php'); ?>', {method:'POST', body:fd})
             .then(r=>r.json())
@@ -381,9 +394,9 @@ function sms_handle_step1() {
     $wpdb->insert("{$wpdb->prefix}sms_leads", $data);
     $lid = $wpdb->insert_id;
     
-    // ENVIAR MENSAJE INICIAL
+    // ENVIAR MENSAJE INICIAL (CAMBIO: Opción EMAIL Restaurada)
     if(function_exists('sms_send_msg')) {
-        $msg = "👋 Hola, recibimos tu solicitud.\n\nPara enviarte el código de verificación, responde a este mensaje únicamente con la palabra:\n\n*WHATSAPP*";
+        $msg = "👋 Hola, recibimos tu solicitud.\n\nPara enviarte el código de verificación, responde:\n\n👉 *WHATSAPP* para recibirlo por aquí.\n👉 *EMAIL* para enviarlo a tu correo.";
         sms_send_msg($clean_phone, $msg);
     }
 
@@ -412,12 +425,9 @@ function sms_handle_step2() {
     }
 }
 
-// SHORTCODE Perfil Público (Sin Cambios)
+// SHORTCODE Perfil Público (Se mantiene igual)
 add_shortcode('sms_perfil_publico', 'sms_render_public_profile');
 function sms_render_public_profile() {
-    // (Mantener el código anterior de perfil público aquí, para no ocupar espacio innecesario 
-    // ya que no se pidieron cambios en esta función)
-    // ... Si lo necesitas completo dímelo, pero es el mismo de la versión anterior ...
      if (!isset($_GET['uid'])) return '<p>Perfil no especificado.</p>';
     $uid = intval($_GET['uid']);
     $user = get_userdata($uid);
