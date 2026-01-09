@@ -38,7 +38,7 @@ function sms_render_frontend() {
     }
 
     $terms_url = get_option('sms_terms_url', '#');
-    // Recuperamos la configuración de cupos máximos del botón
+    // Recuperar cupos máximos configurados
     $max_quotas_btn = isset($active_btn['max_quotas']) ? intval($active_btn['max_quotas']) : 3;
 
     ?>
@@ -210,12 +210,12 @@ function sms_render_frontend() {
             document.getElementById('smsPhoneCode').value = sel.options[sel.selectedIndex].getAttribute('data-code');
         }
 
-        // LÓGICA DE CUPOS (Restaurada)
+        // LÓGICA DE CUPOS
         (function(){
             var max = parseInt(document.getElementById('maxAllowed').value) || 3;
             var sel = document.getElementById('quotaSel');
             if(sel) {
-                sel.innerHTML = ''; // Limpiar
+                sel.innerHTML = ''; 
                 for(var i=1; i<=max; i++) {
                     var opt = document.createElement('option');
                     opt.value = i;
@@ -234,7 +234,7 @@ function sms_render_frontend() {
             btn.innerText = 'Procesando...'; btn.disabled = true;
 
             var fd = new FormData(this);
-            // Combinar indicativo + teléfono
+            // Combinar indicativo + teléfono para envío completo
             fd.append('phone', document.getElementById('smsPhoneCode').value + fd.get('phone_raw'));
 
             fetch('<?php echo admin_url('admin-ajax.php'); ?>', {method:'POST', body:fd})
@@ -298,20 +298,24 @@ function sms_handle_step1() {
     // Generar código simple de 4 dígitos
     $otp = rand(1000, 9999);
     
-    // --- CORRECCIÓN CRÍTICA DE VERIFICACIÓN ---
-    // Limpiamos el teléfono aquí para que se guarde SIEMPRE limpio en la BD.
+    // --- LIMPIEZA CRÍTICA ---
+    // Aseguramos que se guarde SOLO NUMEROS y el + (Ej: +573001234567)
+    // Esto hace que el Webhook simple funcione perfecto.
     $raw_phone = isset($_POST['phone']) ? $_POST['phone'] : '';
     $clean_phone = '+' . preg_replace('/[^0-9]/', '', $raw_phone); 
     
     $email = sanitize_email($_POST['email']);
     
-    // Manejo Empresa/Persona (Restaurado)
+    // Manejo Empresa/Persona
     $company_val = sanitize_text_field($_POST['company']);
-    if (isset($_POST['client_type']) && $_POST['client_type'] === 'person' || empty($company_val)) {
+    // Prioridad a 'client_type' si existe
+    if (isset($_POST['client_type']) && $_POST['client_type'] === 'person') {
+        $company_val = 'Particular';
+    } elseif (empty($company_val)) {
         $company_val = 'Particular';
     }
 
-    // Capturar cupos solicitados (Restaurado)
+    // Cupos Solicitados
     $requested_quotas = intval($_POST['requested_quotas']);
     if($requested_quotas <= 0) $requested_quotas = 3; 
 
@@ -320,20 +324,20 @@ function sms_handle_step1() {
         'city' => sanitize_text_field($_POST['city']),
         'client_company' => $company_val,
         'client_name' => sanitize_text_field($_POST['name']),
-        'client_phone' => $clean_phone, // Se guarda limpio
+        'client_phone' => $clean_phone, // <-- CLAVE: Guardado limpio
         'client_email' => $email,
         'service_page_id' => intval($_POST['page_id']),
         'requirement' => sanitize_textarea_field($_POST['req']),
         'verification_code' => $otp,
         'status' => 'pending',
-        'max_quotas' => $requested_quotas, // Se guarda la preferencia del cliente
+        'max_quotas' => $requested_quotas, 
         'created_at' => current_time('mysql')
     ];
 
     $wpdb->insert("{$wpdb->prefix}sms_leads", $data);
     $lid = $wpdb->insert_id;
     
-    // ENVIAR MENSAJE DE VERIFICACIÓN
+    // ENVIAR MENSAJE
     if(function_exists('sms_send_msg')) {
         $msg = "👋 Hola, recibimos tu solicitud.\n\nPara verificar tus datos y enviarte a los proveedores, responde a este mensaje:\n\n👉 Escribe *WHATSAPP* para recibir el código aquí.\n👉 Escribe *EMAIL* para recibirlo por correo.";
         sms_send_msg($clean_phone, $msg);
@@ -368,18 +372,16 @@ function sms_handle_step2() {
 }
 
 // ============================================================
-// 3. SHORTCODE: PERFIL PÚBLICO DEL PROVEEDOR
+// 3. SHORTCODE: PERFIL PÚBLICO
 // ============================================================
 add_shortcode('sms_perfil_publico', 'sms_render_public_profile');
 
 function sms_render_public_profile() {
     if (!isset($_GET['uid'])) return '<p>Perfil no especificado.</p>';
-    
     $uid = intval($_GET['uid']);
     $user = get_userdata($uid);
     if (!$user) return '<p>Proveedor no encontrado.</p>';
 
-    // Obtener datos
     $com_name = get_user_meta($uid, 'sms_commercial_name', true) ?: $user->display_name;
     $desc = get_user_meta($uid, 'sms_company_desc', true) ?: 'Sin descripción disponible.';
     $address = get_user_meta($uid, 'billing_address_1', true);
@@ -388,7 +390,6 @@ function sms_render_public_profile() {
     $advisor = get_user_meta($uid, 'sms_advisor_name', true);
     $doc_status = get_user_meta($uid, 'sms_docs_status', true);
     
-    // Alerta si no está verificado
     if($doc_status != 'verified') {
         return '<div style="background:#fff3cd; color:#856404; padding:15px; border-radius:5px; text-align:center;">⚠️ Este perfil está en proceso de verificación.</div>';
     }
@@ -401,14 +402,11 @@ function sms_render_public_profile() {
             <h1 style="margin:0; font-size:28px;"><?php echo esc_html($com_name); ?></h1>
             <p style="opacity:0.9;">Proveedor Verificado en la Plataforma</p>
         </div>
-
         <div style="background:#fff; border:1px solid #ddd; border-top:none; border-radius:0 0 10px 10px; padding:30px; box-shadow:0 4px 10px rgba(0,0,0,0.05);">
-            
             <div style="margin-bottom:30px;">
                 <h3 style="border-bottom:2px solid #f0f0f0; padding-bottom:10px;">Sobre Nosotros</h3>
                 <p style="line-height:1.6; color:#555;"><?php echo nl2br(esc_html($desc)); ?></p>
             </div>
-
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
                 <div style="background:#f9f9f9; padding:20px; border-radius:8px;">
                     <h4 style="margin-top:0;">📞 Contacto Comercial</h4>
@@ -416,17 +414,14 @@ function sms_render_public_profile() {
                     <p><strong>WhatsApp:</strong> <a href="https://wa.me/<?php echo str_replace('+','',$phone); ?>" target="_blank" style="text-decoration:none; color:#25d366; font-weight:bold;">Chat Directo 📲</a></p>
                     <p><strong>Email:</strong> <?php echo esc_html($email); ?></p>
                 </div>
-                
                 <div style="background:#f9f9f9; padding:20px; border-radius:8px;">
-                    <h4 style="margin-top:0;">📍 Información Legal</h4>
+                    <h4 style="margin-top:0;">📍 Ubicación</h4>
                     <p><strong>Dirección:</strong> <?php echo esc_html($address ?: 'Oficina Virtual'); ?></p>
                     <div style="margin-top:15px; color:green; font-weight:bold; font-size:12px;">
-                        ✅ Cámara de Comercio Verificada<br>
-                        ✅ RUT Verificado
+                        ✅ Cámara de Comercio Verificada<br>✅ RUT Verificado
                     </div>
                 </div>
             </div>
-
             <div style="text-align:center; margin-top:30px;">
                 <a href="https://wa.me/<?php echo str_replace('+','',$phone); ?>" class="button" style="background:#25d366; color:#fff; padding:12px 25px; border-radius:50px; text-decoration:none; font-size:18px;">Solicitar Cotización Directa</a>
             </div>
