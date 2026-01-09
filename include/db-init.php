@@ -5,12 +5,7 @@ function sms_install_tables() {
     global $wpdb;
     $charset_collate = $wpdb->get_charset_collate();
 
-    // ==========================================
-    // 1. LEADS (COTIZACIONES) - ACTUALIZADA
-    // ==========================================
-    // Se agregan los campos nuevos: priority, deadline
-    // max_quotas se usará para guardar la cantidad seleccionada por el cliente.
-    
+    // 1. Leads (Cotizaciones)
     $sql_leads = "CREATE TABLE {$wpdb->prefix}sms_leads (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         country varchar(50),
@@ -32,20 +27,17 @@ function sms_install_tables() {
         PRIMARY KEY  (id)
     ) $charset_collate;";
 
-    // ==========================================
-    // 2. UNLOCKS (HISTORIAL DE DESBLOQUEOS)
-    // ==========================================
+    // 2. Unlocks (Historial) - SE AGREGA 'credits_spent'
     $sql_unlocks = "CREATE TABLE {$wpdb->prefix}sms_lead_unlocks (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         lead_id mediumint(9) NOT NULL,
         provider_user_id mediumint(9) NOT NULL,
+        credits_spent int(9) DEFAULT 0, 
         unlocked_at datetime DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY  (id)
     ) $charset_collate;";
 
-    // ==========================================
-    // 3. SOLICITUDES DE SERVICIO
-    // ==========================================
+    // 3. Solicitudes
     $sql_requests = "CREATE TABLE {$wpdb->prefix}sms_service_requests (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         provider_user_id mediumint(9) NOT NULL,
@@ -57,8 +49,6 @@ function sms_install_tables() {
 
     require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
     
-    // dbDelta revisa si la tabla existe, y si no, la crea. 
-    // Si ya existe, le agrega las columnas nuevas automáticamente.
     dbDelta($sql_leads);
     dbDelta($sql_unlocks);
     dbDelta($sql_requests);
