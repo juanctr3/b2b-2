@@ -115,7 +115,7 @@ function sms_smart_notification($lead_id) {
 }
 
 /**
- * 4. WEBHOOK: CEREBRO DE INTERACCIÓN (CORREGIDO Y RESTAURADO EMAIL)
+ * 4. WEBHOOK: CEREBRO DE INTERACCIÓN (CORREGIDO)
  */
 add_action('rest_api_init', function () {
     register_rest_route('smsenlinea/v1', '/webhook', [
@@ -137,19 +137,19 @@ function sms_handle_incoming_interaction($req) {
         
         if(strlen($phone_sender) < 7) return new WP_REST_Response('Invalid Phone', 400);
 
-        // Idempotencia
+        // Idempotencia: Reducida a 5 segundos para facilitar pruebas
         $transient_key = 'sms_lock_' . md5($phone_sender . $msg_body);
         if (get_transient($transient_key)) return new WP_REST_Response('Ignored', 200);
-        set_transient($transient_key, true, 60);
+        set_transient($transient_key, true, 5); 
 
-        // "Últimos 10 dígitos" para buscar en BD (Arregla problema +57 vs 57)
-        $short_phone = (strlen($phone_sender) > 10) ? substr($phone_sender, -10) : $phone_sender;
+        // Definimos criterio de búsqueda (últimos 10 dígitos)
+        $search_term = (strlen($phone_sender) > 10) ? substr($phone_sender, -10) : $phone_sender;
 
         // --------------------------------------------------------
         // A. PROVEEDOR: CONFIRMACIÓN
         // --------------------------------------------------------
         if ($msg_body === 'CONFIRMADO') {
-            $users = get_users(['meta_query' => [['key' => 'sms_whatsapp_notif', 'value' => $short_phone, 'compare' => 'LIKE']], 'number' => 1]);
+            $users = get_users(['meta_query' => [['key' => 'sms_whatsapp_notif', 'value' => $search_term, 'compare' => 'LIKE']], 'number' => 1]);
             
             if (!empty($users)) {
                 $u = $users[0];
@@ -173,7 +173,7 @@ function sms_handle_incoming_interaction($req) {
         // --------------------------------------------------------
         elseif (preg_match('/^ACEPTO\s+(\d+)/i', $msg_body, $matches)) {
             $lead_id = intval($matches[1]);
-            $users = get_users(['meta_query' => [['key' => 'sms_whatsapp_notif', 'value' => $short_phone, 'compare' => 'LIKE']], 'number' => 1]);
+            $users = get_users(['meta_query' => [['key' => 'sms_whatsapp_notif', 'value' => $search_term, 'compare' => 'LIKE']], 'number' => 1]);
             
             if(!empty($users)) {
                 $u = $users[0];
@@ -222,14 +222,12 @@ function sms_handle_incoming_interaction($req) {
         // --------------------------------------------------------
         elseif (strpos($msg_body, 'WHATSAPP') !== false) {
             
-            // CORRECCIÓN: Buscamos en la BD usando LIKE para asegurar coincidencia
-            $sql = $wpdb->prepare(
-                "SELECT * FROM {$wpdb->prefix}sms_leads 
-                 WHERE client_phone LIKE %s 
-                 AND is_verified = 0 
-                 ORDER BY created_at DESC LIMIT 1",
-                 '%' . $short_phone // Buscar que termine en '3001234567'
-            );
+            // CORRECCIÓN: Usamos REPLACE para limpiar la base de datos antes de comparar.
+            // Esto asegura que coincida aunque la BD tenga espacios o símbolos (+57 300...).
+            $sql = "SELECT * FROM {$wpdb->prefix}sms_leads 
+                    WHERE REPLACE(REPLACE(client_phone, ' ', ''), '+', '') LIKE '%$search_term' 
+                    AND is_verified = 0 
+                    ORDER BY created_at DESC LIMIT 1";
             
             $lead = $wpdb->get_row($sql);
             
@@ -237,23 +235,20 @@ function sms_handle_incoming_interaction($req) {
                 $otp_key = 'sms_otp_lock_' . $phone_sender;
                 if (!get_transient($otp_key)) {
                     sms_send_msg($phone_sender, "$e_lock Tu código de verificación es: *{$lead->verification_code}*");
-                    set_transient($otp_key, true, 30);
+                    set_transient($otp_key, true, 20); // Bloqueo corto
                 }
             }
         }
 
         // --------------------------------------------------------
-        // D. CLIENTE: VERIFICACIÓN (PIDE EMAIL) - RESTAURADO
+        // D. CLIENTE: VERIFICACIÓN (PIDE EMAIL) - CORREGIDO
         // --------------------------------------------------------
         elseif (strpos($msg_body, 'EMAIL') !== false) {
             
-            $sql = $wpdb->prepare(
-                "SELECT * FROM {$wpdb->prefix}sms_leads 
-                 WHERE client_phone LIKE %s 
-                 AND is_verified = 0 
-                 ORDER BY created_at DESC LIMIT 1",
-                 '%' . $short_phone 
-            );
+            $sql = "SELECT * FROM {$wpdb->prefix}sms_leads 
+                    WHERE REPLACE(REPLACE(client_phone, ' ', ''), '+', '') LIKE '%$search_term' 
+                    AND is_verified = 0 
+                    ORDER BY created_at DESC LIMIT 1";
 
             $lead = $wpdb->get_row($sql);
             
@@ -262,7 +257,7 @@ function sms_handle_incoming_interaction($req) {
                 if (!get_transient($mail_key)) {
                     wp_mail($lead->client_email, "Código de Verificación", "<h3>Código: {$lead->verification_code}</h3>", ['Content-Type: text/html; charset=UTF-8']);
                     sms_send_msg($phone_sender, "$e_mail Código enviado a tu correo: {$lead->client_email}");
-                    set_transient($mail_key, true, 45); 
+                    set_transient($mail_key, true, 20); 
                 }
             }
         }
