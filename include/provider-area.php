@@ -150,6 +150,16 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         $leads = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}sms_leads WHERE service_page_id IN ($ids_str) AND status = 'approved' ORDER BY created_at DESC LIMIT 50");
     }
     
+    // OBTENER HISTORIAL (NUEVO)
+    $history = $wpdb->get_results("
+        SELECT u.*, l.city, l.service_page_id, l.client_name 
+        FROM {$wpdb->prefix}sms_lead_unlocks u
+        LEFT JOIN {$wpdb->prefix}sms_leads l ON u.lead_id = l.id
+        WHERE u.provider_user_id = $uid
+        ORDER BY u.unlocked_at DESC
+        LIMIT 20
+    ");
+
     // UI
     ?>
     <style>
@@ -163,6 +173,11 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         .row-2-col { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
         .doc-list { margin-top:10px; }
         .doc-item { background:#f9f9f9; padding:5px; margin-bottom:3px; font-size:11px; display:flex; justify-content:space-between; border-radius:4px; }
+        
+        /* Estilos Tabla Historial */
+        .sms-history-table { width:100%; border-collapse: collapse; font-size:12px; }
+        .sms-history-table th { text-align:left; background:#f5f5f5; padding:8px; color:#555; }
+        .sms-history-table td { border-bottom:1px solid #eee; padding:8px; }
     </style>
 
     <div class="sms-layout">
@@ -178,7 +193,6 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
             <?php else: ?>
                 <div class="sms-card">
                 <?php foreach($leads as $l): 
-                    // Lógica para mostrar Empresa vs Persona
                     $is_company = ($l->client_company !== 'Particular' && $l->client_company !== '(Persona Natural)');
                     $type_label = $is_company ? '🏢 Empresa' : '👤 Persona Natural';
                     $type_bg = $is_company ? '#e3f2fd' : '#f1f8e9';
@@ -272,6 +286,34 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                     <button type="submit" name="save_provider_profile" class="button button-primary" style="width:100%;">💾 Guardar Perfil Completo</button>
                 </form>
             </div>
+
+            <div class="sms-card">
+                <h3>📉 Historial de Inversiones</h3>
+                <?php if(empty($history)): ?>
+                    <p style="color:#666; font-size:13px;">No has realizado movimientos aún.</p>
+                <?php else: ?>
+                    <table class="sms-history-table">
+                        <thead><tr><th>Fecha</th><th>Concepto</th><th>Inversión</th></tr></thead>
+                        <tbody>
+                            <?php foreach($history as $h): 
+                                $serv_page = get_post($h->service_page_id);
+                                $serv_title = $serv_page ? $serv_page->post_title : 'Servicio General';
+                                $spent = isset($h->credits_spent) ? $h->credits_spent : '-';
+                            ?>
+                            <tr>
+                                <td><?php echo date('d/M/Y', strtotime($h->unlocked_at)); ?><br><span style="color:#999; font-size:10px;"><?php echo date('H:i', strtotime($h->unlocked_at)); ?></span></td>
+                                <td>
+                                    <strong><?php echo esc_html($serv_title); ?></strong><br>
+                                    <small><?php echo esc_html($h->city); ?> (#<?php echo $h->lead_id; ?>)</small>
+                                </td>
+                                <td style="color:#d63638; font-weight:bold;">-<?php echo $spent; ?> cr</td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+            </div>
+
         </div>
 
         <div class="sms-col-side">
