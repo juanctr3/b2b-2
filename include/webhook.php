@@ -72,7 +72,7 @@ function sms_notify_client_match($lead_id, $provider_user_id) {
 }
 
 /**
- * 3. NOTIFICACIÓN A PROVEEDORES (CON LÓGICA DE URGENCIA Y TIPO DE CLIENTE)
+ * 3. NOTIFICACIÓN A PROVEEDORES (CON LÓGICA DE URGENCIA)
  */
 add_action('sms_notify_providers', 'sms_smart_notification', 10, 1);
 
@@ -80,23 +80,6 @@ function sms_smart_notification($lead_id) {
     global $wpdb;
     $lead = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE id=$lead_id");
     if (!$lead) return;
-
-    // A. Calcular Urgencia (Cupos)
-    $unlocks_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id=$lead_id");
-    $max_quotas = (int) $lead->max_quotas;
-    if($max_quotas <= 0) $max_quotas = 3; 
-    
-    $remaining = $max_quotas - $unlocks_count;
-    if($remaining <= 0) return; // Si está lleno, no notificar más
-
-    // Texto de Urgencia
-    $urgency_txt = "";
-    if ($remaining == 1) $urgency_txt = "🔥 *¡ÚLTIMO CUPO DISPONIBLE!*";
-    elseif ($remaining < $max_quotas) $urgency_txt = "⚡ *Solo quedan $remaining cupos.*";
-
-    // B. Detectar Tipo de Cliente (Empresa o Persona)
-    $is_company = ($lead->client_company !== 'Particular' && $lead->client_company !== '(Persona Natural)');
-    $type_label = $is_company ? "🏢 *Cliente: Empresa*" : "👤 *Cliente: Persona Natural*";
 
     $base_url = site_url('/oportunidad'); 
     $shop_url = site_url('/tienda');
@@ -120,23 +103,23 @@ function sms_smart_notification($lead_id) {
                 
                 if ($balance >= $cost) {
                     $link = $base_url . "?lid=" . $lead_id;
-                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n$urgency_txt\n\n📍 *Ciudad:* {$lead->city}\n$type_label\n📝 *Req:* $desc_short\n\n💰 Saldo: *$balance cr* | Costo: *$cost cr*\n\n👉 Responde *ACEPTO $lead_id* para comprar.\n👉 Detalles: $link";
+                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n📍 {$lead->city}\n📝 $desc_short\n\n💰 Saldo: *$balance cr* | Costo: *$cost cr*\n\n👉 Responde *ACEPTO $lead_id* para comprar.\n👉 Detalles: $link";
                 } else {
-                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n$urgency_txt\n\n📍 *Ciudad:* {$lead->city}\n$type_label\n⚠️ *Saldo Insuficiente* ($balance cr).\n📝 *Req:* $desc_short\n\n👉 Recarga aquí: $shop_url";
+                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n⚠️ *Saldo Insuficiente* ($balance cr).\n📝 $desc_short\n\n👉 Recarga aquí: $shop_url";
                 }
                 
                 sms_send_msg($phone, $msg);
                 
                 // Email respaldo
                 $headers = ['Content-Type: text/html; charset=UTF-8'];
-                wp_mail($email, "Oportunidad #$lead_id", "<h3>Solicitud en {$lead->city} ($type_label)</h3><p>{$lead->requirement}</p><p><a href='$link'>Ver en Web</a></p>", $headers);
+                wp_mail($email, "Oportunidad #$lead_id", "<h3>Solicitud en {$lead->city}</h3><p>{$lead->requirement}</p><p><a href='$link'>Ver en Web</a></p>", $headers);
             }
         }
     }
 }
 
 /**
- * 4. WEBHOOK: CEREBRO DE INTERACCIÓN (CORREGIDO PARA ESPACIOS)
+ * 4. WEBHOOK: CEREBRO DE INTERACCIÓN (CORREGIDO Y BLINDADO)
  */
 add_action('rest_api_init', function () {
     register_rest_route('smsenlinea/v1', '/webhook', [
@@ -214,7 +197,7 @@ function sms_handle_incoming_interaction($req) {
                     
                     // Validar Cupos
                     $unlocks_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id=$lead_id");
-                    $max_quotas = (int) $lead->max_quotas ?: 3;
+                    $max_quotas = (int) $lead->max_quotas ?: 3; // Fallback si es nulo
 
                     if (!$already && $unlocks_count >= $max_quotas) {
                         sms_send_msg($phone_sender, "⛔ *Cotización Cerrada*\nSe alcanzó el límite de proveedores.");
@@ -245,14 +228,14 @@ function sms_handle_incoming_interaction($req) {
         // C. CLIENTE: VERIFICACIÓN (SOLICITA CÓDIGO)
         // --------------------------------------------------------
         elseif (strpos($msg_body, 'WHATSAPP') !== false) {
-            // CORRECCIÓN CRÍTICA: Usamos REPLACE para ignorar espacios en la BD si los hubiera.
-            // Esto permite que '+57 300 123' (BD) coincida con '300123' (WhatsApp)
+            // CORRECCIÓN CRÍTICA: Ignorar espacios en la BD para asegurar coincidencia
+            // Busca números que terminen igual al que escribe (los ultimos 10 digitos) ignorando espacios.
             
             $sql = "SELECT * FROM {$wpdb->prefix}sms_leads 
-                    WHERE REPLACE(client_phone, ' ', '') LIKE '%$search_term' 
+                    WHERE REPLACE(REPLACE(client_phone, ' ', ''), '+', '') LIKE '%$search_term' 
                     AND is_verified = 0 
                     ORDER BY created_at DESC LIMIT 1";
-                    
+            
             $lead = $wpdb->get_row($sql);
             
             if ($lead) {
@@ -261,9 +244,6 @@ function sms_handle_incoming_interaction($req) {
                     sms_send_msg($phone_sender, "$e_lock Tu código de verificación es: *{$lead->verification_code}*");
                     set_transient($otp_key, true, 45);
                 }
-            } else {
-                // Log de error para depuración
-                error_log("SMS Debug: Mensaje WHATSAPP recibido de $phone_sender ($search_term) pero no se encontró lead pendiente. Verifica si el número tiene espacios en la BD.");
             }
         }
         
@@ -272,7 +252,7 @@ function sms_handle_incoming_interaction($req) {
         // --------------------------------------------------------
         elseif (strpos($msg_body, 'EMAIL') !== false) {
             $sql = "SELECT * FROM {$wpdb->prefix}sms_leads 
-                    WHERE REPLACE(client_phone, ' ', '') LIKE '%$search_term' 
+                    WHERE REPLACE(REPLACE(client_phone, ' ', ''), '+', '') LIKE '%$search_term' 
                     AND is_verified = 0 
                     ORDER BY created_at DESC LIMIT 1";
 
