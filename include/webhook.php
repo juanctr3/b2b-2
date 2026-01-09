@@ -2,7 +2,7 @@
 if (!defined('ABSPATH')) exit;
 
 /**
- * 1. FUNCIÓN DE ENVÍO MENSAJES (MÉTODO FORM-URLENCODED)
+ * 1. FUNCIÓN DE ENVÍO MENSAJES (MÉTODO FORM-URLENCODED - ESTABLE)
  */
 function sms_send_msg($to, $msg) {
     $url = "https://whatsapp.smsenlinea.com/api/send/whatsapp";
@@ -10,6 +10,7 @@ function sms_send_msg($to, $msg) {
     // Limpieza estándar
     $to = preg_replace('/[^0-9]/', '', $to);
 
+    // Asegurar UTF-8
     if (function_exists('mb_convert_encoding')) {
         $msg = mb_convert_encoding($msg, 'UTF-8', 'auto');
     }
@@ -56,9 +57,11 @@ function sms_notify_client_match($lead_id, $provider_user_id) {
     $p_email = $prov->user_email;
     $profile_link = site_url("/perfil-proveedor?uid=" . $provider_user_id);
 
+    // Mensaje WhatsApp Cliente
     $msg = "👋 Hola {$lead->client_name}.\n\n✅ *¡Proveedor Asignado!*\nLa empresa *{$p_company}* ha aceptado tu solicitud.\n\n👤 *Asesor:* $p_advisor\n📞 *WhatsApp:* +$p_phone\n📧 *Email:* $p_email\n\n🔗 *Ver Perfil:* $profile_link";
     sms_send_msg($lead->client_phone, $msg);
 
+    // Email Cliente
     $subject = "✅ Proveedor Asignado: $p_company";
     $body = "<h3>¡Buenas noticias!</h3><p>La empresa <strong>$p_company</strong> te contactará.</p><ul><li>Asesor: $p_advisor</li><li>WhatsApp: +$p_phone</li><li>Email: $p_email</li></ul><p><a href='$profile_link' style='background:#007cba; color:#fff; padding:10px; border-radius:5px; text-decoration:none;'>Ver Perfil de la Empresa</a></p>";
     $headers = ['Content-Type: text/html; charset=UTF-8'];
@@ -87,9 +90,13 @@ function sms_smart_notification($lead_id) {
     if ($remaining == 1) $urgency_txt = "🔥 *¡ÚLTIMO CUPO DISPONIBLE!*";
     elseif ($remaining < $max_quotas) $urgency_txt = "⚡ *Solo quedan $remaining cupos.*";
 
-    // B. Tipo de Cliente
+    // B. LÓGICA DE NOTIFICACIÓN ENRIQUECIDA (TIPO DE CLIENTE + CIUDAD)
+    // Si client_company no es 'Particular', asumimos que es una empresa.
     $is_company = ($lead->client_company !== 'Particular' && $lead->client_company !== '(Persona Natural)');
+    
+    // Iconos y etiquetas claras para el mensaje
     $type_label = $is_company ? "🏢 *Cliente: Empresa*" : "👤 *Cliente: Persona Natural*";
+    $city_label = "📍 *Ciudad:* {$lead->city}";
 
     $base_url = site_url('/oportunidad'); 
     $shop_url = site_url('/tienda');
@@ -113,9 +120,10 @@ function sms_smart_notification($lead_id) {
                 
                 if ($balance >= $cost) {
                     $link = $base_url . "?lid=" . $lead_id;
-                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n$urgency_txt\n\n📍 *Ciudad:* {$lead->city}\n$type_label\n📝 *Req:* $desc_short\n\n💰 Saldo: *$balance cr* | Costo: *$cost cr*\n\n👉 Responde *ACEPTO $lead_id* para comprar.\n👉 Detalles: $link";
+                    // MENSAJE COMPLETO
+                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n$urgency_txt\n\n$city_label\n$type_label\n📝 *Req:* $desc_short\n\n💰 Saldo: *$balance cr* | Costo: *$cost cr*\n\n👉 Responde *ACEPTO $lead_id* para comprar.\n👉 Detalles: $link";
                 } else {
-                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n$urgency_txt\n\n📍 *Ciudad:* {$lead->city}\n$type_label\n⚠️ *Saldo Insuficiente* ($balance cr).\n📝 *Req:* $desc_short\n\n👉 Recarga aquí: $shop_url";
+                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n$urgency_txt\n\n$city_label\n$type_label\n⚠️ *Saldo Insuficiente* ($balance cr).\n📝 *Req:* $desc_short\n\n👉 Recarga aquí: $shop_url";
                 }
                 
                 sms_send_msg($phone, $msg);
