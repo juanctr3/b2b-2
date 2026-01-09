@@ -2,20 +2,16 @@
 if (!defined('ABSPATH')) exit;
 
 /**
- * 1. FUNCIÓN DE ENVÍO MENSAJES (MÉTODO FORM-URLENCODED - ESTABLE)
+ * 1. FUNCIÓN DE ENVÍO MENSAJES (MÉTODO FORM-URLENCODED)
  */
 function sms_send_msg($to, $msg) {
     $url = "https://whatsapp.smsenlinea.com/api/send/whatsapp";
-    
-    // 1. Limpieza: Dejar solo números (sin +, sin espacios)
-    $to = preg_replace('/[^0-9]/', '', $to);
+    $to = preg_replace('/[^0-9]/', '', $to); // Limpieza
 
-    // 2. Asegurar UTF-8 para emojis
     if (function_exists('mb_convert_encoding')) {
         $msg = mb_convert_encoding($msg, 'UTF-8', 'auto');
     }
 
-    // 3. Datos del payload
     $data = [
         "secret"    => get_option('sms_api_secret'),
         "account"   => get_option('sms_account_id'),
@@ -25,7 +21,6 @@ function sms_send_msg($to, $msg) {
         "priority"  => 1
     ];
 
-    // 4. Envío usando x-www-form-urlencoded
     $response = wp_remote_post($url, [
         'body'      => $data, 
         'timeout'   => 20,
@@ -53,7 +48,6 @@ function sms_notify_client_match($lead_id, $provider_user_id) {
     $p_company = get_user_meta($provider_user_id, 'sms_commercial_name', true) ?: ($prov->billing_company ?: 'Empresa Verificada');
     $p_advisor = get_user_meta($provider_user_id, 'sms_advisor_name', true) ?: $prov->display_name;
     
-    // Preferimos el whatsapp de notificación
     $p_phone_raw = get_user_meta($provider_user_id, 'sms_whatsapp_notif', true) ?: $prov->billing_phone;
     $p_phone = preg_replace('/[^0-9]/', '', $p_phone_raw);
 
@@ -72,7 +66,7 @@ function sms_notify_client_match($lead_id, $provider_user_id) {
 }
 
 /**
- * 3. NOTIFICACIÓN A PROVEEDORES (CON LÓGICA DE URGENCIA)
+ * 3. NOTIFICACIÓN A PROVEEDORES
  */
 add_action('sms_notify_providers', 'sms_smart_notification', 10, 1);
 
@@ -80,6 +74,23 @@ function sms_smart_notification($lead_id) {
     global $wpdb;
     $lead = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}sms_leads WHERE id=$lead_id");
     if (!$lead) return;
+
+    // A. Calcular Urgencia (Cupos)
+    $unlocks_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id=$lead_id");
+    $max_quotas = (int) $lead->max_quotas;
+    if($max_quotas <= 0) $max_quotas = 3; 
+    
+    $remaining = $max_quotas - $unlocks_count;
+    if($remaining <= 0) return; 
+
+    // Texto de Urgencia
+    $urgency_txt = "";
+    if ($remaining == 1) $urgency_txt = "🔥 *¡ÚLTIMO CUPO DISPONIBLE!*";
+    elseif ($remaining < $max_quotas) $urgency_txt = "⚡ *Solo quedan $remaining cupos.*";
+
+    // B. Detectar Tipo de Cliente
+    $is_company = ($lead->client_company !== 'Particular' && $lead->client_company !== '(Persona Natural)');
+    $type_label = $is_company ? "🏢 *Cliente: Empresa*" : "👤 *Cliente: Persona Natural*";
 
     $base_url = site_url('/oportunidad'); 
     $shop_url = site_url('/tienda');
@@ -103,23 +114,22 @@ function sms_smart_notification($lead_id) {
                 
                 if ($balance >= $cost) {
                     $link = $base_url . "?lid=" . $lead_id;
-                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n📍 {$lead->city}\n📝 $desc_short\n\n💰 Saldo: *$balance cr* | Costo: *$cost cr*\n\n👉 Responde *ACEPTO $lead_id* para comprar.\n👉 Detalles: $link";
+                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n$urgency_txt\n\n📍 *Ciudad:* {$lead->city}\n$type_label\n📝 *Req:* $desc_short\n\n💰 Saldo: *$balance cr* | Costo: *$cost cr*\n\n👉 Responde *ACEPTO $lead_id* para comprar.\n👉 Detalles: $link";
                 } else {
-                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n⚠️ *Saldo Insuficiente* ($balance cr).\n📝 $desc_short\n\n👉 Recarga aquí: $shop_url";
+                    $msg = "🔔 *Nueva Oportunidad #$lead_id*\n$urgency_txt\n\n📍 *Ciudad:* {$lead->city}\n$type_label\n⚠️ *Saldo Insuficiente* ($balance cr).\n📝 *Req:* $desc_short\n\n👉 Recarga aquí: $shop_url";
                 }
                 
                 sms_send_msg($phone, $msg);
                 
-                // Email respaldo
                 $headers = ['Content-Type: text/html; charset=UTF-8'];
-                wp_mail($email, "Oportunidad #$lead_id", "<h3>Solicitud en {$lead->city}</h3><p>{$lead->requirement}</p><p><a href='$link'>Ver en Web</a></p>", $headers);
+                wp_mail($email, "Oportunidad #$lead_id", "<h3>Solicitud en {$lead->city} ($type_label)</h3><p>{$lead->requirement}</p><p><a href='$link'>Ver en Web</a></p>", $headers);
             }
         }
     }
 }
 
 /**
- * 4. WEBHOOK: CEREBRO DE INTERACCIÓN (CORREGIDO Y BLINDADO)
+ * 4. WEBHOOK: CEREBRO DE INTERACCIÓN (BLINDADO CONTRA ESPACIOS)
  */
 add_action('rest_api_init', function () {
     register_rest_route('smsenlinea/v1', '/webhook', [
@@ -151,7 +161,7 @@ function sms_handle_incoming_interaction($req) {
         set_transient($transient_key, true, 60);
 
         // --------------------------------------------------------
-        // A. PROVEEDOR: CONFIRMACIÓN DE WHATSAPP
+        // A. PROVEEDOR: CONFIRMACIÓN
         // --------------------------------------------------------
         if ($msg_body === 'CONFIRMADO') {
             $users = get_users(['meta_query' => [['key' => 'sms_whatsapp_notif', 'value' => $search_term, 'compare' => 'LIKE']], 'number' => 1]);
@@ -175,7 +185,7 @@ function sms_handle_incoming_interaction($req) {
         }
         
         // --------------------------------------------------------
-        // B. PROVEEDOR: COMPRA VIA WHATSAPP (ACEPTO ID)
+        // B. PROVEEDOR: COMPRA (ACEPTO ID)
         // --------------------------------------------------------
         elseif (preg_match('/^ACEPTO\s+(\d+)/i', $msg_body, $matches)) {
             $lead_id = intval($matches[1]);
@@ -197,7 +207,7 @@ function sms_handle_incoming_interaction($req) {
                     
                     // Validar Cupos
                     $unlocks_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id=$lead_id");
-                    $max_quotas = (int) $lead->max_quotas ?: 3; // Fallback si es nulo
+                    $max_quotas = (int) $lead->max_quotas ?: 3;
 
                     if (!$already && $unlocks_count >= $max_quotas) {
                         sms_send_msg($phone_sender, "⛔ *Cotización Cerrada*\nSe alcanzó el límite de proveedores.");
@@ -228,9 +238,7 @@ function sms_handle_incoming_interaction($req) {
         // C. CLIENTE: VERIFICACIÓN (SOLICITA CÓDIGO)
         // --------------------------------------------------------
         elseif (strpos($msg_body, 'WHATSAPP') !== false) {
-            // CORRECCIÓN CRÍTICA: Ignorar espacios en la BD para asegurar coincidencia
-            // Busca números que terminen igual al que escribe (los ultimos 10 digitos) ignorando espacios.
-            
+            // CORRECCIÓN CRÍTICA: REPLACE para ignorar espacios y símbolos en la BD
             $sql = "SELECT * FROM {$wpdb->prefix}sms_leads 
                     WHERE REPLACE(REPLACE(client_phone, ' ', ''), '+', '') LIKE '%$search_term' 
                     AND is_verified = 0 
@@ -262,7 +270,7 @@ function sms_handle_incoming_interaction($req) {
                 $mail_key = 'sms_mail_lock_' . $phone_sender;
                 if (!get_transient($mail_key)) {
                     wp_mail($lead->client_email, "Código de Verificación", "<h3>Código: {$lead->verification_code}</h3>", ['Content-Type: text/html; charset=UTF-8']);
-                    sms_send_msg($phone_sender, "$e_mail Código enviado a tu correo: {$lead->client_email}");
+                    sms_send_msg($phone_sender, "$e_mail Código enviado a tu correo.");
                     set_transient($mail_key, true, 45); 
                 }
             }
