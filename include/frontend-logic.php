@@ -8,9 +8,10 @@ function sms_render_frontend() {
     if (!$current_page_id) return;
 
     $buttons_config = get_option('sms_buttons_config', []);
-    $terms_url = get_option('sms_terms_url', '#'); // URL de términos desde admin
+    $terms_url = get_option('sms_terms_url', '#'); // URL de términos
     $active_btn = null;
     
+    // Buscar si hay botón configurado para esta página
     if (!empty($buttons_config) && is_array($buttons_config)) {
         foreach ($buttons_config as $btn) {
             if (isset($btn['pages']) && is_array($btn['pages']) && in_array($current_page_id, $btn['pages'])) {
@@ -20,6 +21,10 @@ function sms_render_frontend() {
         }
     }
     if (!$active_btn) return;
+
+    // Obtener máximo de cotizaciones permitidas para este botón (Default: 3)
+    $max_quotas_allowed = isset($active_btn['max_quotas']) ? intval($active_btn['max_quotas']) : 3;
+    if ($max_quotas_allowed <= 0) $max_quotas_allowed = 3;
 
     // Contar proveedores disponibles
     $users = get_users();
@@ -43,9 +48,11 @@ function sms_render_frontend() {
         .sms-modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; justify-content: center; align-items: center; }
         .sms-modal-box { background: #fff; width: 90%; max-width: 450px; padding: 25px; border-radius: 12px; position: relative; max-height: 90vh; overflow-y: auto; }
         .sms-input { width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
+        .sms-row { display: flex; gap: 10px; }
+        .sms-col { flex: 1; }
         .sms-btn-submit { width: 100%; padding: 12px; background: #007cba; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 5px; }
         
-        /* Estilos Tooltip WhatsApp */
+        /* Tooltip WhatsApp */
         .sms-tooltip-container { position: relative; display: inline-block; margin-left: 5px; cursor: help; }
         .sms-info-icon { background: #eee; color: #666; border-radius: 50%; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; border: 1px solid #ccc; }
         .sms-tooltip-text { visibility: hidden; width: 220px; background-color: #333; color: #fff; text-align: center; border-radius: 6px; padding: 8px; position: absolute; z-index: 1; bottom: 125%; left: 50%; margin-left: -110px; opacity: 0; transition: opacity 0.3s; font-size: 11px; line-height: 1.4; font-weight: normal; pointer-events: none; }
@@ -71,7 +78,7 @@ function sms_render_frontend() {
             
             <div id="smsStep1">
                 <h3>Solicitar Cotizaci&oacute;n</h3>
-                <p style="color:#666; margin-bottom:15px;">Enviar a <?php echo $provider_count; ?> empresas verificadas.</p>
+                <p style="color:#666; margin-bottom:15px; font-size:13px;">Complete el formulario para recibir hasta <strong><?php echo $max_quotas_allowed; ?> ofertas</strong>.</p>
                 
                 <form id="smsLeadForm">
                     <input type="hidden" name="action" value="sms_submit_lead_step1">
@@ -110,6 +117,28 @@ function sms_render_frontend() {
 
                     <input type="text" name="name" placeholder="Tu Nombre" class="sms-input" required>
                     
+                    <div class="sms-row">
+                        <div class="sms-col">
+                            <label style="font-size:11px; font-weight:bold;">Prioridad</label>
+                            <select name="priority" class="sms-input">
+                                <option value="Normal">Normal</option>
+                                <option value="Urgente">Urgente</option>
+                                <option value="Muy Urgente">Muy Urgente 🚨</option>
+                            </select>
+                        </div>
+                        <div class="sms-col">
+                            <label style="font-size:11px; font-weight:bold;">Fecha Límite</label>
+                            <input type="date" name="deadline" class="sms-input" min="<?php echo date('Y-m-d'); ?>" required>
+                        </div>
+                    </div>
+
+                    <label style="font-size:11px; font-weight:bold;">¿Cuántas cotizaciones requieres?</label>
+                    <select name="quotas_requested" class="sms-input">
+                        <?php for($i=1; $i<=$max_quotas_allowed; $i++): ?>
+                            <option value="<?php echo $i; ?>" <?php selected($i, $max_quotas_allowed); ?>><?php echo $i; ?> Cotizaciones</option>
+                        <?php endfor; ?>
+                    </select>
+                    
                     <label style="font-size:12px; font-weight:bold; margin-bottom:5px; display:block;">
                         Número de WhatsApp 
                         <div class="sms-tooltip-container">
@@ -132,7 +161,7 @@ function sms_render_frontend() {
                         </label>
                     </div>
 
-                    <button type="submit" class="sms-btn-submit" id="btnStep1">Continuar</button>
+                    <button type="submit" class="sms-btn-submit" id="btnStep1">Solicitar Cotizaciones</button>
                 </form>
             </div>
 
@@ -265,6 +294,11 @@ function sms_handle_step1() {
         $company_val = 'Particular'; 
     }
 
+    // Datos extra
+    $priority = sanitize_text_field($_POST['priority']);
+    $deadline = sanitize_text_field($_POST['deadline']);
+    $quotas_requested = intval($_POST['quotas_requested']);
+
     $data = [
         'country' => sanitize_text_field($_POST['country']),
         'city' => sanitize_text_field($_POST['city']),
@@ -274,6 +308,9 @@ function sms_handle_step1() {
         'client_email' => $email,
         'service_page_id' => intval($_POST['page_id']),
         'requirement' => sanitize_textarea_field($_POST['req']),
+        'priority' => $priority,
+        'deadline' => $deadline,
+        'max_quotas' => $quotas_requested, // Guardamos la preferencia del cliente
         'verification_code' => $otp,
         'status' => 'pending',
         'created_at' => current_time('mysql')
@@ -313,7 +350,7 @@ function sms_handle_step2() {
     }
 }
 
-// SHORTCODE Perfil Público
+// SHORTCODE Perfil Público (Se mantiene igual)
 add_shortcode('sms_perfil_publico', 'sms_render_public_profile');
 
 function sms_render_public_profile() {
