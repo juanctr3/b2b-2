@@ -7,7 +7,7 @@ if (!defined('ABSPATH')) exit;
 add_action('admin_menu', function() {
     // Contar proveedores pendientes REALES usando la meta key correcta
     $pending_docs = get_users([
-        'meta_key' => 'sms_docs_status', // CORREGIDO
+        'meta_key' => 'sms_docs_status',
         'meta_value' => 'pending',
         'fields' => 'ID'
     ]);
@@ -20,7 +20,7 @@ add_action('admin_menu', function() {
     
     add_menu_page(
         'Plataforma B2B', 
-        $menu_label, // Título con burbuja roja
+        $menu_label, 
         'manage_options', 
         'sms-b2b', 
         'sms_render_dashboard', 
@@ -43,6 +43,9 @@ add_action('admin_init', function() {
     register_setting('sms_opts', 'sms_product_id'); 
     register_setting('sms_opts', 'sms_credits_qty'); 
     register_setting('sms_opts', 'sms_welcome_bonus'); 
+    
+    // Legal
+    register_setting('sms_opts', 'sms_terms_url'); // NUEVO: URL Términos
 });
 
 // ==========================================
@@ -51,7 +54,7 @@ add_action('admin_init', function() {
 function sms_render_dashboard() {
     $tab = $_GET['tab'] ?? 'leads';
 
-    // ALERTA: Contar documentos pendientes (Meta key corregida)
+    // ALERTA: Contar documentos pendientes
     $pending_docs = get_users([
         'meta_key' => 'sms_docs_status',
         'meta_value' => 'pending',
@@ -102,20 +105,26 @@ function sms_tab_leads() {
     if (isset($_POST['action_lead'])) {
         $lid = intval($_POST['lead_id']);
         
-        // A. Guardar solo texto (limpieza)
+        // A. Guardar solo texto y cupos (limpieza)
         if ($_POST['action_lead'] == 'save_edit') {
             $new_req = sanitize_textarea_field($_POST['edited_req']);
-            $wpdb->update("{$wpdb->prefix}sms_leads", ['requirement' => $new_req], ['id' => $lid]);
-            echo '<div class="notice notice-success is-dismissible"><p>✅ Descripción actualizada.</p></div>';
+            $new_quota = intval($_POST['edited_quota']);
+            
+            $wpdb->update("{$wpdb->prefix}sms_leads", 
+                ['requirement' => $new_req, 'max_quotas' => $new_quota], 
+                ['id' => $lid]
+            );
+            echo '<div class="notice notice-success is-dismissible"><p>✅ Datos actualizados.</p></div>';
         }
         
         // B. Aprobar y Distribuir
         if ($_POST['action_lead'] == 'approve') {
             $cost = intval($_POST['lead_cost']);
             $new_req = sanitize_textarea_field($_POST['edited_req']);
+            $quota = intval($_POST['edited_quota']);
             
             $wpdb->update("{$wpdb->prefix}sms_leads", 
-                ['status' => 'approved', 'cost_credits' => $cost, 'requirement' => $new_req], 
+                ['status' => 'approved', 'cost_credits' => $cost, 'requirement' => $new_req, 'max_quotas' => $quota], 
                 ['id' => $lid]
             );
             
@@ -166,7 +175,8 @@ function sms_tab_leads() {
                 <th>Fecha</th>
                 <th>Estado</th>
                 <th>Datos Contacto (Admin)</th>
-                <th>Servicio / Cobertura</th> <th style="width:35%;">Edición</th>
+                <th>Servicio / Cupos</th> 
+                <th style="width:35%;">Edición</th>
                 <th>Acciones</th>
             </tr>
         </thead>
@@ -177,10 +187,13 @@ function sms_tab_leads() {
                 $ts = strtotime($l->created_at);
                 $fecha_display = ($ts && date('Y', $ts) > 2000) ? date_i18n(get_option('date_format'), $ts) : '<span style="color:#999">(Sin fecha)</span>';
                 
-                // --- LÓGICA PUNTO 2: CONTAR PROVEEDORES HABILITADOS ---
+                // Contar desbloqueos para saber cupos restantes
+                $unlocks = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id={$l->id}");
+                $remaining = max(0, $l->max_quotas - $unlocks);
+                
+                // Contar proveedores habilitados
                 $all_providers = get_users(['meta_key' => 'sms_approved_services', 'meta_compare' => 'EXISTS']);
                 $enabled_providers = [];
-                
                 foreach($all_providers as $prov) {
                     $prov_services = get_user_meta($prov->ID, 'sms_approved_services', true);
                     if (is_array($prov_services) && in_array($l->service_page_id, $prov_services)) {
@@ -190,7 +203,6 @@ function sms_tab_leads() {
                     }
                 }
                 $count_provs = count($enabled_providers);
-                // -----------------------------------------------------
             ?>
             <tr>
                 <td><?php echo $fecha_display; ?></td>
@@ -206,7 +218,14 @@ function sms_tab_leads() {
                 </td>
                 <td>
                     <strong><?php echo esc_html($service_name); ?></strong>
-                    <div style="margin-top:8px;">
+                    <div style="margin:5px 0;">
+                        Cupos: <strong><?php echo $unlocks; ?>/<?php echo $l->max_quotas; ?></strong><br>
+                        <span style="color:<?php echo $remaining>0 ? 'green':'red'; ?>; font-weight:bold;">
+                            (Quedan: <?php echo $remaining; ?>)
+                        </span>
+                    </div>
+                    
+                    <div style="margin-top:5px;">
                         <?php if($count_provs > 0): ?>
                             <details style="cursor:pointer;">
                                 <summary style="color:#007cba; font-weight:bold; font-size:12px;">
@@ -227,8 +246,12 @@ function sms_tab_leads() {
                     <form method="post" style="padding:5px;">
                         <input type="hidden" name="lead_id" value="<?php echo $l->id; ?>">
                         <textarea name="edited_req" style="width:100%; height:60px; font-size:12px; margin-bottom:5px;"><?php echo esc_textarea($l->requirement); ?></textarea>
-                        <div style="display:flex; gap:5px; align-items:center;">
-                            <button type="submit" name="action_lead" value="save_edit" class="button button-small">💾 Guardar Texto</button>
+                        
+                        <label style="font-size:12px;">Max Cupos:</label>
+                        <input type="number" name="edited_quota" value="<?php echo $l->max_quotas; ?>" style="width:60px; margin-bottom:5px;" min="1">
+                        
+                        <div style="display:flex; gap:5px; align-items:center; margin-top:5px;">
+                            <button type="submit" name="action_lead" value="save_edit" class="button button-small">💾 Guardar Cambios</button>
                             <?php if($l->status == 'pending'): ?>
                                 <input type="number" name="lead_cost" value="10" style="width:45px; height:25px;" min="1">
                                 <button type="submit" name="action_lead" value="approve" class="button button-primary button-small">Aprobar</button>
@@ -264,7 +287,7 @@ function sms_tab_providers() {
         $uid = intval($_POST['user_id']);
         $prov_phone = get_user_meta($uid, 'sms_whatsapp_notif', true);
 
-        // APROBAR SERVICIOS (Lógica Nueva)
+        // APROBAR SERVICIOS
         if ($_POST['prov_action'] == 'approve_services') {
             $requested = get_user_meta($uid, 'sms_requested_services', true) ?: [];
             update_user_meta($uid, 'sms_approved_services', $requested);
@@ -415,6 +438,7 @@ function sms_tab_services() {
         $new_buttons = [];
         if(isset($_POST['btn_labels'])) {
             $labels = $_POST['btn_labels']; 
+            $quotas = $_POST['btn_quotas']; // Guardar cupos por botón
             $page_groups = $_POST['btn_pages_ids']; 
             
             for($i=0; $i < count($labels); $i++){
@@ -424,6 +448,7 @@ function sms_tab_services() {
                     
                     $new_buttons[] = [
                         'label' => sanitize_text_field($labels[$i]), 
+                        'max_quotas' => intval($quotas[$i]),
                         'pages' => array_map('intval', $pgs)
                     ];
                 }
@@ -439,7 +464,7 @@ function sms_tab_services() {
     if (!is_array($active)) $active = [];
 
     $btns = get_option('sms_buttons_config', []);
-    if (!is_array($btns) || empty($btns)) $btns = [['label'=>'Cotizar', 'pages'=>[]]];
+    if (!is_array($btns) || empty($btns)) $btns = [['label'=>'Cotizar', 'max_quotas'=>3, 'pages'=>[]]];
     ?>
     <form method="post">
         <div class="card" style="margin-bottom:20px; padding:15px;">
@@ -461,7 +486,10 @@ function sms_tab_services() {
                     $btn_pages = (isset($btn['pages']) && is_array($btn['pages'])) ? $btn['pages'] : [];
                 ?>
                 <div class="btn-row" style="background:#f9f9f9; border:1px solid #ddd; padding:10px; margin-bottom:10px; border-radius:5px;">
-                    <p><strong>Etiqueta:</strong> <input type="text" name="btn_labels[]" value="<?php echo esc_attr($btn['label']); ?>" class="regular-text"></p>
+                    <p>
+                        <strong>Etiqueta:</strong> <input type="text" name="btn_labels[]" value="<?php echo esc_attr($btn['label']); ?>" class="regular-text">
+                        &nbsp; <strong>Max Cotizaciones:</strong> <input type="number" name="btn_quotas[]" value="<?php echo esc_attr($btn['max_quotas'] ?? 3); ?>" style="width:60px;" min="1">
+                    </p>
                     <p><strong>Mostrar en:</strong><br>
                     <select name="btn_pages_ids[<?php echo $idx; ?>][]" multiple style="width:100%; height:120px;">
                         <?php if($all_pages): foreach($all_pages as $p): 
@@ -487,7 +515,8 @@ function sms_tab_services() {
             if(w.children.length > 0) {
                 var c = w.children[0].cloneNode(true);
                 var i = w.children.length;
-                c.querySelector('input').value = '';
+                c.querySelector('input[type=text]').value = '';
+                c.querySelector('input[type=number]').value = '3';
                 var sel = c.querySelector('select');
                 sel.name = 'btn_pages_ids['+i+'][]';
                 var o = sel.options;
@@ -563,6 +592,9 @@ function sms_tab_config() {
             <tr><td colspan="2"><hr><h3>💳 Recargas WooCommerce</h3></td></tr>
             <tr><th>ID Producto Recarga</th><td><input type="number" name="sms_product_id" value="<?php echo get_option('sms_product_id'); ?>" class="small-text"></td></tr>
             <tr><th>Créditos por Unidad</th><td><input type="number" name="sms_credits_qty" value="<?php echo get_option('sms_credits_qty', 100); ?>" class="small-text"></td></tr>
+
+            <tr><td colspan="2"><hr><h3>📜 Legal</h3></td></tr>
+            <tr><th>URL Términos y Condiciones</th><td><input type="text" name="sms_terms_url" value="<?php echo get_option('sms_terms_url'); ?>" class="regular-text" placeholder="https://..."></td></tr>
         </table>
         <?php submit_button(); ?>
     </form>
@@ -625,4 +657,3 @@ function sms_check_order_for_credits($order_id) {
         $order->add_order_note("✅ Sistema B2B: +$credits_to_add créditos. Nuevo saldo: $new");
     }
 }
-
