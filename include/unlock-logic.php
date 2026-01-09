@@ -28,8 +28,6 @@ function sms_render_unlock_page() {
 
     // 4. Calcular Cupos y Urgencia
     $competitors_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id = $lead_id");
-    
-    // Usamos el valor real que eligió el cliente. Si es 0, usamos 3 por defecto.
     $max_allowed = (int) $lead->max_quotas;
     if ($max_allowed <= 0) $max_allowed = 3;
 
@@ -56,7 +54,6 @@ function sms_render_unlock_page() {
     // ==========================================
     if (isset($_POST['sms_confirm_unlock']) && !$is_unlocked) {
         
-        // Re-validar cupos
         $current_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id = $lead_id");
         if ($current_count >= $max_allowed) {
             $msg = '<div class="woocommerce-error">⛔ <strong>¡Lo sentimos!</strong> Justo se acaba de ocupar el último cupo.</div>';
@@ -68,10 +65,11 @@ function sms_render_unlock_page() {
                 // A. Descontar saldo
                 update_user_meta($user_id, 'sms_wallet_balance', $balance - $lead->cost_credits);
                 
-                // B. Registrar desbloqueo
+                // B. Registrar desbloqueo (GUARDANDO EL COSTO)
                 $wpdb->insert("{$wpdb->prefix}sms_lead_unlocks", [
                     'lead_id' => $lead_id, 
-                    'provider_user_id' => $user_id
+                    'provider_user_id' => $user_id,
+                    'credits_spent' => $lead->cost_credits // <--- NUEVO
                 ]);
 
                 // C. Notificar al Cliente (Match)
