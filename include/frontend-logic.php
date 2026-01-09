@@ -85,7 +85,7 @@ function sms_render_frontend() {
             <div id="smsWizardContainer">
                 
                 <h3 style="margin-top:0; margin-bottom:5px;">Solicitar Cotizaci&oacute;n</h3>
-                <p style="color:#666; font-size:13px; margin-bottom:15px;">Completa los pasos para recibir ofertas.</p>
+                <p style="color:#666; font-size:13px; margin-bottom:15px;">Atendemos de inmediato tu solicitud.</p>
                 
                 <div class="sms-progress">
                     <div class="sms-bar active" id="bar1"></div>
@@ -481,3 +481,4 @@ function sms_render_public_profile() {
     <?php
     return ob_get_clean();
 }
+
