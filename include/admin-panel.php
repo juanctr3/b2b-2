@@ -5,27 +5,21 @@ if (!defined('ABSPATH')) exit;
 // 1. INICIALIZACIÓN (MENÚS Y SETTINGS)
 // ==========================================
 add_action('admin_menu', function() {
-    // Contar proveedores pendientes REALES usando la meta key correcta
-    $pending_docs = get_users([
-        'meta_key' => 'sms_docs_status',
-        'meta_value' => 'pending',
-        'fields' => 'ID'
-    ]);
-    $pending_count = count($pending_docs);
-
+    // 1. Contar documentos pendientes
+    $pending_docs = count(get_users(['meta_key' => 'sms_docs_status', 'meta_value' => 'pending', 'fields' => 'ID']));
+    
+    // 2. Contar solicitudes de servicio pendientes (NUEVO)
+    global $wpdb;
+    $pending_reqs = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_service_requests WHERE status = 'pending'");
+    
+    $total_alerts = $pending_docs + $pending_reqs;
     $menu_label = 'Plataforma B2B';
-    if ($pending_count > 0) {
-        $menu_label .= " <span class='awaiting-mod count-$pending_count'><span class='pending-count'>$pending_count</span></span>";
+    
+    if ($total_alerts > 0) {
+        $menu_label .= " <span class='awaiting-mod count-$total_alerts'><span class='pending-count'>$total_alerts</span></span>";
     }
     
-    add_menu_page(
-        'Plataforma B2B', 
-        $menu_label, 
-        'manage_options', 
-        'sms-b2b', 
-        'sms_render_dashboard', 
-        'dashicons-groups'
-    );
+    add_menu_page('Plataforma B2B', $menu_label, 'manage_options', 'sms-b2b', 'sms_render_dashboard', 'dashicons-groups');
 });
 
 add_action('admin_init', function() {
@@ -535,11 +529,34 @@ function sms_tab_services() {
 // ==========================================
 function sms_tab_requests() {
     global $wpdb;
+
+    // A. Procesar acción de marcar como atendido
+    if(isset($_POST['req_action']) && $_POST['req_action'] == 'complete') {
+        $req_id = intval($_POST['request_id']);
+        $prov_id = intval($_POST['prov_id']);
+        $serv_name = sanitize_text_field($_POST['serv_name']);
+        
+        // Actualizar estado en BD
+        $wpdb->update("{$wpdb->prefix}sms_service_requests", ['status' => 'completed'], ['id' => $req_id]);
+        
+        // Notificar al proveedor por WhatsApp
+        $prov_phone = get_user_meta($prov_id, 'sms_whatsapp_notif', true);
+        
+        if(function_exists('sms_send_msg') && $prov_phone) {
+            $msg = "✅ *Solicitud Atendida*\n\nLa categoría: *$serv_name* ha sido creada en la plataforma.\n\nPor favor ingresa a tu perfil y selecciónala en la lista de servicios para empezar a recibir cotizaciones.";
+            sms_send_msg($prov_phone, $msg);
+        }
+        echo '<div class="notice notice-success is-dismissible"><p>✅ Solicitud marcada como completada y proveedor notificado por WhatsApp.</p></div>';
+    }
+
+    // B. Mostrar Tabla
     $reqs = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}sms_service_requests ORDER BY created_at DESC");
     ?>
     <h3>Solicitudes de Nuevas Categorías</h3>
+    <p class="description">Cuando un proveedor solicite un servicio que no existe: 1. Crea la página en WordPress. 2. Vuelve aquí y dale clic a "Creada & Notificar".</p>
+    
     <table class="widefat striped">
-        <thead><tr><th>Fecha</th><th>Proveedor</th><th>Servicio Solicitado</th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Proveedor</th><th>Servicio Solicitado</th><th>Estado / Acción</th></tr></thead>
         <tbody>
             <?php if($reqs): foreach($reqs as $r): 
                 $u = get_userdata($r->provider_user_id);
@@ -548,6 +565,18 @@ function sms_tab_requests() {
                 <td><?php echo $r->created_at; ?></td>
                 <td><?php echo $u ? $u->display_name : 'ID '.$r->provider_user_id; ?></td>
                 <td><strong><?php echo esc_html($r->requested_service); ?></strong></td>
+                <td>
+                    <?php if($r->status == 'pending'): ?>
+                        <form method="post">
+                            <input type="hidden" name="request_id" value="<?php echo $r->id; ?>">
+                            <input type="hidden" name="prov_id" value="<?php echo $r->provider_user_id; ?>">
+                            <input type="hidden" name="serv_name" value="<?php echo esc_attr($r->requested_service); ?>">
+                            <button type="submit" name="req_action" value="complete" class="button button-primary button-small">✅ Creada & Notificar</button>
+                        </form>
+                    <?php else: ?>
+                        <span style="color:green; font-weight:bold;">✔ Atendida</span>
+                    <?php endif; ?>
+                </td>
             </tr>
             <?php endforeach; endif; ?>
         </tbody>
@@ -657,3 +686,4 @@ function sms_check_order_for_credits($order_id) {
         $order->add_order_note("✅ Sistema B2B: +$credits_to_add créditos. Nuevo saldo: $new");
     }
 }
+
