@@ -298,43 +298,45 @@ function sms_handle_step1() {
     // Generar código simple de 4 dígitos
     $otp = rand(1000, 9999);
     
-    // Sanitización
-    $full_phone = sanitize_text_field($_POST['phone']); // Ya viene con indicativo
+    // Sanitización INTENSIVA del Teléfono (CORRECCIÓN IMPORTANTE)
+    // Eliminamos espacios y guiones, dejamos solo el + y los números.
+    $raw_phone = isset($_POST['phone']) ? $_POST['phone'] : '';
+    $clean_phone = '+' . preg_replace('/[^0-9]/', '', $raw_phone); 
+    
     $email = sanitize_email($_POST['email']);
     
     // Manejo Empresa/Persona
     $company_val = sanitize_text_field($_POST['company']);
-    if ($_POST['client_type'] === 'person' || empty($company_val)) {
+    if (isset($_POST['client_type']) && $_POST['client_type'] === 'person' || empty($company_val)) {
         $company_val = 'Particular';
     }
 
     // Capturar cupos solicitados
     $requested_quotas = intval($_POST['requested_quotas']);
-    if($requested_quotas <= 0) $requested_quotas = 3; // Fallback
+    if($requested_quotas <= 0) $requested_quotas = 3; 
 
     $data = [
         'country' => sanitize_text_field($_POST['country']),
         'city' => sanitize_text_field($_POST['city']),
         'client_company' => $company_val,
         'client_name' => sanitize_text_field($_POST['name']),
-        'client_phone' => $full_phone,
+        'client_phone' => $clean_phone, // Se guarda limpio
         'client_email' => $email,
         'service_page_id' => intval($_POST['page_id']),
         'requirement' => sanitize_textarea_field($_POST['req']),
         'verification_code' => $otp,
         'status' => 'pending',
-        'max_quotas' => $requested_quotas, // NUEVO CAMPO
+        'max_quotas' => $requested_quotas,
         'created_at' => current_time('mysql')
     ];
 
     $wpdb->insert("{$wpdb->prefix}sms_leads", $data);
     $lid = $wpdb->insert_id;
     
-    // ENVIAR MENSAJE DE VERIFICACIÓN (UTF-8 Seguro)
+    // ENVIAR MENSAJE DE VERIFICACIÓN
     if(function_exists('sms_send_msg')) {
-        // Nota: sms_send_msg ya maneja la limpieza del número
         $msg = "👋 Hola, recibimos tu solicitud.\n\nPara verificar tus datos y enviarte a los proveedores, responde a este mensaje:\n\n👉 Escribe *WHATSAPP* para recibir el código aquí.\n👉 Escribe *EMAIL* para recibirlo por correo.";
-        sms_send_msg($full_phone, $msg);
+        sms_send_msg($clean_phone, $msg);
     }
 
     wp_send_json_success(['lead_id' => $lid]);
