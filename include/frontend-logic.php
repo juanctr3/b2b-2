@@ -110,7 +110,7 @@ function sms_render_frontend() {
                         </div>
 
                         <label class="sms-label">¿Qué necesitas cotizar? (Detalla tu requerimiento)</label>
-                        <textarea name="req" id="inputReq" rows="5" class="sms-input" placeholder="Ej: Requerimos el servicio de XXXX, tenemos los siguientes detalles" required></textarea>
+                        <textarea name="req" id="inputReq" rows="5" class="sms-input" placeholder="Ej: Requerimos el servicio de XXXX, tenemos los siguientes detalles..... cotizar costos, traslados, ejecución, etc, Necesitamos las cotizaciones lo antes posible..." required></textarea>
 
                         <label class="sms-label">Nivel de Prioridad</label>
                         <select name="priority" class="sms-input">
@@ -481,5 +481,6 @@ function sms_render_public_profile() {
     <?php
     return ob_get_clean();
 }
+
 
 
