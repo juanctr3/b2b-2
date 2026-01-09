@@ -1,6 +1,9 @@
 <?php
 if (!defined('ABSPATH')) exit;
 
+// ==========================================
+// 1. INTEGRACIÓN CON MI CUENTA (WOOCOMMERCE)
+// ==========================================
 add_filter('woocommerce_account_menu_items', function($items) {
     $items['zona-proveedor'] = '🏭 Zona Proveedor';
     return $items;
@@ -12,68 +15,83 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     $uid = get_current_user_id();
     global $wpdb;
 
-    // A. GUARDAR PERFIL & VERIFICACIÓN WHATSAPP
+    // ==========================================
+    // A. GUARDAR PERFIL Y VERIFICACIÓN WHATSAPP
+    // ==========================================
     if (isset($_POST['save_provider_profile'])) {
-        // 1. Obtener datos previos para comparar
+        // 1. Obtener datos previos para detectar cambios
         $old_wa = get_user_meta($uid, 'sms_whatsapp_notif', true);
         
-        // 2. Limpiar y preparar nuevos datos
-        $new_wa = sanitize_text_field($_POST['p_whatsapp']);
-        $new_wa_clean = str_replace([' ','+'], '', $new_wa);
+        // 2. Construir el nuevo número (País + Celular)
+        $country_code = sanitize_text_field($_POST['p_country_code']);
+        $phone_raw = sanitize_text_field($_POST['p_whatsapp_raw']);
+        $new_wa_clean = $country_code . preg_replace('/[^0-9]/', '', $phone_raw); // Ej: 573001234567
 
-        // 3. Guardar datos generales
+        // 3. Guardar Datos Generales de la Empresa
         update_user_meta($uid, 'billing_company', sanitize_text_field($_POST['p_razon_social']));
         update_user_meta($uid, 'sms_commercial_name', sanitize_text_field($_POST['p_commercial_name']));
         update_user_meta($uid, 'sms_nit', sanitize_text_field($_POST['p_nit']));
+        
+        // Datos de Contacto
         update_user_meta($uid, 'billing_address_1', sanitize_text_field($_POST['p_address']));
-        update_user_meta($uid, 'billing_phone', sanitize_text_field($_POST['p_phone']));
         update_user_meta($uid, 'billing_email', sanitize_email($_POST['p_email']));
+        
+        // Guardamos el WhatsApp también como 'billing_phone' para compatibilidad con el Admin
+        update_user_meta($uid, 'billing_phone', $new_wa_clean); 
+        update_user_meta($uid, 'sms_whatsapp_notif', $new_wa_clean);
+
+        // Detalles Adicionales
         update_user_meta($uid, 'sms_advisor_name', sanitize_text_field($_POST['p_advisor']));
         update_user_meta($uid, 'sms_company_desc', sanitize_textarea_field($_POST['p_desc']));
 
-        // Guardar servicios solicitados
+        // Servicios Solicitados
         $requested_pages = $_POST['p_servs'] ?? [];
         update_user_meta($uid, 'sms_requested_services', $requested_pages);
         
-        // 4. Guardar el nuevo número de WhatsApp
-        update_user_meta($uid, 'sms_whatsapp_notif', $new_wa_clean);
+        // Asegurar que exista el array de aprobados
+        if(!get_user_meta($uid, 'sms_approved_services', true)) {
+            update_user_meta($uid, 'sms_approved_services', []);
+        }
 
+        // 4. LÓGICA DE VERIFICACIÓN DE WHATSAPP
         $msg_extra = "";
-
-        // 5. LÓGICA CORREGIDA: Solo enviar mensaje SI EL NÚMERO CAMBIÓ
+        
+        // Si el número cambió respecto al anterior, forzamos re-verificación
         if ($new_wa_clean && $new_wa_clean !== $old_wa) {
-            // Resetear estado a pendiente solo si cambió el número
             update_user_meta($uid, 'sms_phone_status', 'pending');
             
             if (function_exists('sms_send_msg')) {
                 $site_name = get_bloginfo('name');
-                $txt = "🔐 *Activación de Notificaciones*\n\nHola, hemos detectado un cambio de número en *$site_name*. Para volver a recibir alertas, responde:\n\n*CONFIRMADO*";
+                $txt = "🔐 *Verificación de Seguridad*\n\nHola, hemos detectado un cambio de número en tu cuenta de *$site_name*.\n\nPara activar las notificaciones, responde:\n*CONFIRMADO*";
                 sms_send_msg($new_wa_clean, $txt);
-                $msg_extra = "<br>📨 <strong>¡Número actualizado!</strong> Te enviamos un nuevo mensaje de confirmación a WhatsApp.";
+                $msg_extra = "<br>📨 <strong>¡Número Actualizado!</strong> Te enviamos un WhatsApp. Responde <b>CONFIRMADO</b> para activarlo.";
             }
         } 
-        // Si el número es el mismo pero sigue pendiente, solo mostramos aviso visual (sin spam)
+        // Si no cambió pero sigue pendiente
         elseif (get_user_meta($uid, 'sms_phone_status', true) !== 'verified') {
-            $msg_extra = "<br>⚠️ Tu WhatsApp aún no está verificado. Busca el mensaje anterior y responde <b>CONFIRMADO</b>.";
+            $msg_extra = "<br>⚠️ Tu WhatsApp aún no está verificado. Busca nuestro mensaje y responde <b>CONFIRMADO</b>.";
         }
 
-        echo '<div class="woocommerce-message">✅ Perfil actualizado correctamente.' . $msg_extra . '</div>';
+        echo '<div class="woocommerce-message">✅ Perfil de empresa actualizado.' . $msg_extra . '</div>';
     }
 
-    // B. SOLICITUD SERVICIO
+    // ==========================================
+    // B. SOLICITUD DE NUEVO SERVICIO (EXTRA)
+    // ==========================================
     if (isset($_POST['req_new_service'])) {
         $serv_name = sanitize_text_field($_POST['new_service_name']);
         if($serv_name) {
             $exists = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$wpdb->prefix}sms_service_requests WHERE provider_user_id = %d AND requested_service = %s", $uid, $serv_name));
             if(!$exists) {
                 $wpdb->insert("{$wpdb->prefix}sms_service_requests", ['provider_user_id' => $uid, 'requested_service' => $serv_name]);
-                echo '<div class="woocommerce-message">✅ Solicitud enviada.</div>';
+                echo '<div class="woocommerce-message">✅ Solicitud de categoría enviada al admin.</div>';
             }
         }
     }
 
+    // ==========================================
     // C. CARGA DE DOCUMENTOS
-    // PUNTO 1: Solo permitimos subir si NO está verificado.
+    // ==========================================
     $docs_status = get_user_meta($uid, 'sms_docs_status', true);
     
     if (isset($_FILES['p_docs']) && $docs_status != 'verified') {
@@ -102,42 +120,52 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
 
         if ($uploaded_count > 0) {
             update_user_meta($uid, 'sms_docs_status', 'pending');
-            // Notificar Admin (código resumido)
-            $admin_email = get_option('admin_email');
-            wp_mail($admin_email, "Docs Subidos", "Proveedor ID $uid subió documentos.");
+            // Notificar Admin
+            $admin_phone = get_option('sms_admin_phone');
+            $prov_name = wp_get_current_user()->display_name;
+            if(function_exists('sms_send_msg') && $admin_phone) {
+                sms_send_msg($admin_phone, "📂 *Admin:* El proveedor $prov_name ha subido documentos.");
+            }
+            
             echo "<script>window.location.href = '" . wc_get_account_endpoint_url('zona-proveedor') . "?docs_uploaded=1';</script>";
             exit;
         }
     }
 
-    if(isset($_GET['docs_uploaded'])) echo '<div class="woocommerce-message">✅ Documentos enviados.</div>';
+    if(isset($_GET['docs_uploaded'])) echo '<div class="woocommerce-message">✅ Documentos enviados a revisión.</div>';
 
-    // DATOS DE LECTURA
+    // ==========================================
+    // D. PREPARACIÓN DE DATOS PARA LA VISTA
+    // ==========================================
     $active_pages_ids = get_option('sms_active_service_pages', []);
     $approved_servs = get_user_meta($uid, 'sms_approved_services', true) ?: [];
     $requested_servs = get_user_meta($uid, 'sms_requested_services', true) ?: [];
     $balance = (int) get_user_meta($uid, 'sms_wallet_balance', true);
     $docs_urls = get_user_meta($uid, 'sms_company_docs', true) ?: [];
 
-    // OBTENER DATOS DE PERFIL PARA EL FORMULARIO
+    // Datos del formulario
     $p_razon = get_user_meta($uid, 'billing_company', true);
     $p_comercial = get_user_meta($uid, 'sms_commercial_name', true);
     $p_nit = get_user_meta($uid, 'sms_nit', true);
     $p_address = get_user_meta($uid, 'billing_address_1', true);
-    $p_phone = get_user_meta($uid, 'billing_phone', true);
-    $p_whatsapp = get_user_meta($uid, 'sms_whatsapp_notif', true);
     $p_email = get_user_meta($uid, 'billing_email', true) ?: wp_get_current_user()->user_email;
     $p_advisor = get_user_meta($uid, 'sms_advisor_name', true);
     $p_desc = get_user_meta($uid, 'sms_company_desc', true);
+    
+    // WhatsApp y Estado
+    $full_whatsapp = get_user_meta($uid, 'sms_whatsapp_notif', true);
+    $wa_status = get_user_meta($uid, 'sms_phone_status', true);
 
-    // OBTENER LEADS
+    // OBTENER LEADS (Solo de servicios aprobados)
     $leads = [];
     if (!empty($approved_servs)) {
         $ids_str = implode(',', array_map('intval', $approved_servs));
         $leads = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}sms_leads WHERE service_page_id IN ($ids_str) AND status = 'approved' ORDER BY created_at DESC LIMIT 50");
     }
     
-    // ESTILOS Y UI
+    // ==========================================
+    // E. RENDERIZADO (HTML)
+    // ==========================================
     ?>
     <style>
         .sms-layout { display: flex; flex-wrap: wrap; gap: 25px; } 
@@ -146,19 +174,22 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         .sms-card { background: #fff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); padding: 25px; margin-bottom: 25px; border:1px solid #eee; }
         .sms-input-group { margin-bottom: 15px; }
         .sms-input-group label { display: block; font-weight: bold; font-size: 12px; margin-bottom: 5px; }
-        .sms-input-group input, .sms-input-group textarea { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        .sms-input-group input, .sms-input-group textarea, .sms-input-group select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
         .row-2-col { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .doc-list { margin-top:10px; }
+        .doc-item { background:#f9f9f9; padding:5px; margin-bottom:3px; font-size:11px; display:flex; justify-content:space-between; border-radius:4px; }
     </style>
 
     <div class="sms-layout">
         <div class="sms-col-main">
-            <h3>📋 Tablero de Oportunidades</h3>
+            
+            <h3>📋 Oportunidades Disponibles</h3>
             <?php if(empty($approved_servs)): ?>
                 <div class="sms-card" style="border-left: 5px solid orange;">
-                    <p>⚠️ <strong>Perfil Incompleto:</strong> Configura tus servicios y completa tus datos de empresa para ver cotizaciones.</p>
+                    <p>⚠️ <strong>Perfil Incompleto:</strong> Configura tus servicios abajo y espera la aprobación del administrador.</p>
                 </div>
             <?php elseif(empty($leads)): ?>
-                <div class="sms-card"><p>No hay cotizaciones activas en tus categorías.</p></div>
+                <div class="sms-card"><p>No hay cotizaciones activas en tus categorías por ahora.</p></div>
             <?php else: ?>
                 <div class="sms-card">
                 <?php foreach($leads as $l): ?>
@@ -176,7 +207,7 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
             <?php endif; ?>
 
             <div class="sms-card">
-                <h3>🏢 Perfil de Empresa (Público para Clientes)</h3>
+                <h3>🏢 Perfil de Empresa (Público)</h3>
                 <form method="post">
                     <div class="row-2-col">
                         <div class="sms-input-group">
@@ -200,66 +231,75 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                             <input type="text" name="p_address" value="<?php echo esc_attr($p_address); ?>">
                         </div>
                         <div class="sms-input-group">
-                            <label>Email Contacto</label>
+                            <label>Email Corporativo</label>
                             <input type="email" name="p_email" value="<?php echo esc_attr($p_email); ?>">
                         </div>
                     </div>
 
-                    <div class="row-2-col">
-                         <div class="sms-input-group">
-                            <label>Teléfono Fijo / PBX</label>
-                            <input type="text" name="p_phone" value="<?php echo esc_attr($p_phone); ?>">
+                    <div class="sms-input-group">
+                        <label>WhatsApp para Notificaciones y Clientes 
+                            <?php echo ($wa_status=='verified') ? '<span style="color:green">✅ (Verificado)</span>' : '<span style="color:red; font-size:11px;">⚠️ (Sin verificar)</span>'; ?>
+                        </label>
+                        <div style="display:flex; gap:10px;">
+                            <select name="p_country_code" style="width:130px; flex-shrink:0;">
+                                <option value="57">🇨🇴 +57</option>
+                                <option value="52">🇲🇽 +52</option>
+                                <option value="51">🇵🇪 +51</option>
+                                <option value="54">🇦🇷 +54</option>
+                                <option value="56">🇨🇱 +56</option>
+                                <option value="34">🇪🇸 +34</option>
+                                <option value="1">🇺🇸 +1</option>
+                            </select>
+                            <input type="number" name="p_whatsapp_raw" value="<?php 
+                                // Limpiamos visualmente el indicativo para que el usuario solo vea su número local
+                                echo preg_replace('/^(57|52|51|54|56|34|1)/', '', $full_whatsapp); 
+                            ?>" placeholder="Ej: 3001234567" required>
                         </div>
-                        <div class="sms-input-group">
-                            <label>WhatsApp (Notificaciones y Clientes)</label>
-                            <input type="text" name="p_whatsapp" value="<?php echo esc_attr($p_whatsapp); ?>" placeholder="+57300..." required>
-                        </div>
+                        <p class="description" style="font-size:11px; color:#666;">Selecciona tu país e ingresa tu número celular sin espacios.</p>
                     </div>
 
                     <div class="sms-input-group">
-                        <label>Nombre Asesor Encargado</label>
+                        <label>Nombre del Asesor Encargado</label>
                         <input type="text" name="p_advisor" value="<?php echo esc_attr($p_advisor); ?>">
                     </div>
 
                     <div class="sms-input-group">
-                        <label>Descripción de la Empresa (Servicios, experiencia...)</label>
+                        <label>Descripción de la Empresa (Experiencia, Servicios...)</label>
                         <textarea name="p_desc" rows="3"><?php echo esc_textarea($p_desc); ?></textarea>
                     </div>
 
                     <hr>
-                    <h4>⚙️ Configuración de Servicios</h4>
-                    <div style="height:150px; overflow-y:scroll; border:1px solid #eee; padding:10px; margin-bottom:15px; background:#f9f9f9;">
+                    <h4>⚙️ Selección de Servicios</h4>
+                    <p style="font-size:12px; color:#666; margin-bottom:5px;">Marca los servicios que deseas ofrecer. Deben ser aprobados por el administrador.</p>
+                    <div style="height:150px; overflow-y:scroll; border:1px solid #eee; padding:10px; margin-bottom:15px; background:#f9f9f9; border-radius:4px;">
                         <?php foreach($active_pages_ids as $pid): 
                             $p = get_post($pid); if(!$p) continue;
                             $is_requested = in_array($pid, $requested_servs);
                             $is_approved = in_array($pid, $approved_servs);
                         ?>
-                        <label style="display:block; font-size:12px; margin-bottom:5px;">
+                        <label style="display:block; font-size:12px; margin-bottom:5px; cursor:pointer;">
                             <input type="checkbox" name="p_servs[]" value="<?php echo $pid; ?>" <?php checked($is_requested); ?>>
                             <?php echo $p->post_title; ?>
-                            <?php if($is_approved): ?> <span style="color:green; font-weight:bold;">(✅ Aprobado)</span>
-                            <?php elseif($is_requested): ?> <span style="color:orange;">(⏳ Pendiente)</span>
+                            <?php if($is_approved): ?> <span style="color:green; font-weight:bold; font-size:10px;">● ACTIVO</span>
+                            <?php elseif($is_requested): ?> <span style="color:orange; font-size:10px;">● PENDIENTE</span>
                             <?php endif; ?>
                         </label>
                         <?php endforeach; ?>
                     </div>
 
-                    <button type="submit" name="save_provider_profile" class="button button-primary" style="width:100%;">💾 Guardar Perfil Completo</button>
+                    <button type="submit" name="save_provider_profile" class="button button-primary" style="width:100%; padding:10px;">💾 Guardar Perfil Completo</button>
                 </form>
             </div>
         </div>
 
         <div class="sms-col-side">
-            <div class="sms-col-side">
+            
             <div class="sms-card" style="text-align:center; border: 2px solid #007cba;">
                 <h4 style="margin-top:0;">🌐 Tu Presencia Digital</h4>
-                <p style="font-size:12px;">Así ven los clientes tu empresa:</p>
+                <p style="font-size:12px;">Así te ven los clientes:</p>
                 <a href="<?php echo site_url('/perfil-proveedor?uid='.$uid); ?>" target="_blank" class="button button-primary" style="width:100%;">👁️ Ver mi Perfil Público</a>
             </div>
 
-            <div class="sms-card" style="background:#e8f0fe; text-align:center;">
-                
-                
             <div class="sms-card" style="background:#e8f0fe; text-align:center;">
                 <h3>💰 Saldo Disponible</h3>
                 <h2 style="color:#007cba; margin:10px 0;"><?php echo $balance; ?> Créditos</h2>
@@ -272,13 +312,13 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                 
                 <?php if($docs_status == 'verified'): ?>
                     <div style="color:green; background:#d4edda; padding:10px; border-radius:5px; border:1px solid #c3e6cb;">
-                        <strong>✅ Documentación Aprobada</strong>
-                        <p style="font-size:11px; margin:5px 0;">Sus documentos han sido validados. Para actualizar, contacte a soporte.</p>
+                        <strong>✅ Aprobado</strong>
+                        <p style="font-size:11px; margin:5px 0;">Tu empresa está verificada.</p>
                     </div>
                 <?php else: ?>
                     
                     <?php if($docs_status == 'pending'): ?>
-                        <div style="color:#856404; background:#fff3cd; padding:10px; border-radius:5px; margin-bottom:10px;">⏳ En Revisión por Admin</div>
+                        <div style="color:#856404; background:#fff3cd; padding:10px; border-radius:5px; margin-bottom:10px;">⏳ En Revisión</div>
                     <?php endif; ?>
 
                     <form method="post" enctype="multipart/form-data">
@@ -288,9 +328,9 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
 
                 <?php endif; ?>
 
-                <div class="doc-list" style="margin-top:15px;">
+                <div class="doc-list">
                     <?php if(!empty($docs_urls)): foreach($docs_urls as $idx => $url): ?>
-                        <div style="background:#f1f1f1; padding:5px; margin-bottom:3px; font-size:11px; display:flex; justify-content:space-between;">
+                        <div class="doc-item">
                             <span>Doc #<?php echo $idx+1; ?></span>
                             <a href="<?php echo $url; ?>" target="_blank">Ver</a>
                         </div>
@@ -301,6 +341,3 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     </div>
     <?php
 });
-
-
-
