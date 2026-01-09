@@ -5,7 +5,12 @@ function sms_install_tables() {
     global $wpdb;
     $charset_collate = $wpdb->get_charset_collate();
 
-    // 1. Leads (Cotizaciones) - SE AGREGA 'max_quotas'
+    // ==========================================
+    // 1. LEADS (COTIZACIONES) - ACTUALIZADA
+    // ==========================================
+    // Se agregan los campos nuevos: priority, deadline
+    // max_quotas se usará para guardar la cantidad seleccionada por el cliente.
+    
     $sql_leads = "CREATE TABLE {$wpdb->prefix}sms_leads (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         country varchar(50),
@@ -16,6 +21,8 @@ function sms_install_tables() {
         client_email varchar(100),
         service_page_id mediumint(9), 
         requirement text,
+        priority varchar(50) DEFAULT 'Normal', 
+        deadline date DEFAULT NULL,
         verification_code varchar(10),
         is_verified tinyint(1) DEFAULT 0,
         status varchar(20) DEFAULT 'pending',
@@ -25,7 +32,9 @@ function sms_install_tables() {
         PRIMARY KEY  (id)
     ) $charset_collate;";
 
-    // 2. Unlocks
+    // ==========================================
+    // 2. UNLOCKS (HISTORIAL DE DESBLOQUEOS)
+    // ==========================================
     $sql_unlocks = "CREATE TABLE {$wpdb->prefix}sms_lead_unlocks (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         lead_id mediumint(9) NOT NULL,
@@ -34,7 +43,9 @@ function sms_install_tables() {
         PRIMARY KEY  (id)
     ) $charset_collate;";
 
-    // 3. Solicitudes
+    // ==========================================
+    // 3. SOLICITUDES DE SERVICIO
+    // ==========================================
     $sql_requests = "CREATE TABLE {$wpdb->prefix}sms_service_requests (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         provider_user_id mediumint(9) NOT NULL,
@@ -45,6 +56,9 @@ function sms_install_tables() {
     ) $charset_collate;";
 
     require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+    
+    // dbDelta revisa si la tabla existe, y si no, la crea. 
+    // Si ya existe, le agrega las columnas nuevas automáticamente.
     dbDelta($sql_leads);
     dbDelta($sql_unlocks);
     dbDelta($sql_requests);
