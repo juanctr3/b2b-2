@@ -5,7 +5,7 @@ function sms_install_tables() {
     global $wpdb;
     $charset_collate = $wpdb->get_charset_collate();
 
-    // 1. Leads (Cotizaciones)
+    // 1. Leads (Cotizaciones) - SE AGREGA 'max_quotas'
     $sql_leads = "CREATE TABLE {$wpdb->prefix}sms_leads (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         country varchar(50),
@@ -20,11 +20,12 @@ function sms_install_tables() {
         is_verified tinyint(1) DEFAULT 0,
         status varchar(20) DEFAULT 'pending',
         cost_credits int(5) DEFAULT 0,
+        max_quotas int(5) DEFAULT 3, 
         created_at datetime DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY  (id)
     ) $charset_collate;";
 
-    // 2. Unlocks (Quién compró el dato)
+    // 2. Unlocks
     $sql_unlocks = "CREATE TABLE {$wpdb->prefix}sms_lead_unlocks (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         lead_id mediumint(9) NOT NULL,
@@ -33,7 +34,7 @@ function sms_install_tables() {
         PRIMARY KEY  (id)
     ) $charset_collate;";
 
-    // 3. Solicitudes de Nuevos Servicios
+    // 3. Solicitudes
     $sql_requests = "CREATE TABLE {$wpdb->prefix}sms_service_requests (
         id mediumint(9) NOT NULL AUTO_INCREMENT,
         provider_user_id mediumint(9) NOT NULL,
