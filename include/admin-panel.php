@@ -8,7 +8,7 @@ add_action('admin_menu', function() {
     // 1. Contar documentos pendientes
     $pending_docs = count(get_users(['meta_key' => 'sms_docs_status', 'meta_value' => 'pending', 'fields' => 'ID']));
     
-    // 2. Contar solicitudes de servicio pendientes (NUEVO)
+    // 2. Contar solicitudes de servicio pendientes
     global $wpdb;
     $pending_reqs = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_service_requests WHERE status = 'pending'");
     
@@ -39,7 +39,7 @@ add_action('admin_init', function() {
     register_setting('sms_opts', 'sms_welcome_bonus'); 
     
     // Legal
-    register_setting('sms_opts', 'sms_terms_url'); // NUEVO: URL Términos
+    register_setting('sms_opts', 'sms_terms_url'); 
 });
 
 // ==========================================
@@ -90,7 +90,7 @@ function sms_render_dashboard() {
 }
 
 // ==========================================
-// 3. PESTAÑA: COTIZACIONES (LEADS)
+// 3. PESTAÑA: COTIZACIONES (LEADS) - ACTUALIZADO
 // ==========================================
 function sms_tab_leads() {
     global $wpdb;
@@ -99,13 +99,21 @@ function sms_tab_leads() {
     if (isset($_POST['action_lead'])) {
         $lid = intval($_POST['lead_id']);
         
-        // A. Guardar solo texto y cupos (limpieza)
+        // Datos comunes a actualizar
+        $new_req = sanitize_textarea_field($_POST['edited_req']);
+        $new_quota = intval($_POST['edited_quota']);
+        $new_prio = sanitize_text_field($_POST['edited_priority']);
+        $new_date = sanitize_text_field($_POST['edited_deadline']);
+
+        // A. Guardar Edición (Sin aprobar)
         if ($_POST['action_lead'] == 'save_edit') {
-            $new_req = sanitize_textarea_field($_POST['edited_req']);
-            $new_quota = intval($_POST['edited_quota']);
-            
             $wpdb->update("{$wpdb->prefix}sms_leads", 
-                ['requirement' => $new_req, 'max_quotas' => $new_quota], 
+                [
+                    'requirement' => $new_req, 
+                    'max_quotas' => $new_quota,
+                    'priority' => $new_prio,
+                    'deadline' => $new_date
+                ], 
                 ['id' => $lid]
             );
             echo '<div class="notice notice-success is-dismissible"><p>✅ Datos actualizados.</p></div>';
@@ -114,11 +122,16 @@ function sms_tab_leads() {
         // B. Aprobar y Distribuir
         if ($_POST['action_lead'] == 'approve') {
             $cost = intval($_POST['lead_cost']);
-            $new_req = sanitize_textarea_field($_POST['edited_req']);
-            $quota = intval($_POST['edited_quota']);
             
             $wpdb->update("{$wpdb->prefix}sms_leads", 
-                ['status' => 'approved', 'cost_credits' => $cost, 'requirement' => $new_req, 'max_quotas' => $quota], 
+                [
+                    'status' => 'approved', 
+                    'cost_credits' => $cost, 
+                    'requirement' => $new_req, 
+                    'max_quotas' => $new_quota,
+                    'priority' => $new_prio,
+                    'deadline' => $new_date
+                ], 
                 ['id' => $lid]
             );
             
@@ -127,16 +140,16 @@ function sms_tab_leads() {
             echo '<div class="notice notice-success is-dismissible"><p>🚀 Cotización Aprobada y Notificada.</p></div>';
         }
 
-        // C. Despublicar (Volver a pendiente)
+        // C. Despublicar
         if ($_POST['action_lead'] == 'unapprove') {
             $wpdb->update("{$wpdb->prefix}sms_leads", ['status' => 'pending'], ['id' => $lid]);
-            echo '<div class="notice notice-warning is-dismissible"><p>🚫 Cotización ocultada de los proveedores.</p></div>';
+            echo '<div class="notice notice-warning is-dismissible"><p>🚫 Cotización ocultada.</p></div>';
         }
 
-        // D. Eliminar definitivamente
+        // D. Eliminar
         if ($_POST['action_lead'] == 'delete') {
             $wpdb->delete("{$wpdb->prefix}sms_leads", ['id' => $lid]);
-            $wpdb->delete("{$wpdb->prefix}sms_lead_unlocks", ['lead_id' => $lid]); // Borrar historial
+            $wpdb->delete("{$wpdb->prefix}sms_lead_unlocks", ['lead_id' => $lid]); 
             echo '<div class="notice notice-error is-dismissible"><p>🗑️ Cotización eliminada.</p></div>';
         }
     }
@@ -166,11 +179,11 @@ function sms_tab_leads() {
     <table class="widefat striped">
         <thead>
             <tr>
-                <th>Fecha</th>
                 <th>Estado</th>
-                <th>Datos Contacto (Admin)</th>
-                <th>Servicio / Cupos</th> 
-                <th style="width:35%;">Edición</th>
+                <th>Datos Contacto (Privado)</th>
+                <th>Urgencia / Cierre</th>
+                <th>Detalle / Cupos</th> 
+                <th style="width:30%;">Edición</th>
                 <th>Acciones</th>
             </tr>
         </thead>
@@ -178,37 +191,41 @@ function sms_tab_leads() {
             <?php foreach($leads as $l): 
                 $page = get_post($l->service_page_id);
                 $service_name = $page ? $page->post_title : '(General)';
-                $ts = strtotime($l->created_at);
-                $fecha_display = ($ts && date('Y', $ts) > 2000) ? date_i18n(get_option('date_format'), $ts) : '<span style="color:#999">(Sin fecha)</span>';
                 
-                // Contar desbloqueos para saber cupos restantes
+                // Urgencia Visual
+                $prio_style = 'color:green;';
+                if($l->priority == 'Urgente') $prio_style = 'color:orange; font-weight:bold;';
+                if($l->priority == 'Muy Urgente') $prio_style = 'color:red; font-weight:bold;';
+
+                // Cupos
                 $unlocks = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id={$l->id}");
                 $remaining = max(0, $l->max_quotas - $unlocks);
                 
-                // Contar proveedores habilitados
+                // Proveedores habilitados
                 $all_providers = get_users(['meta_key' => 'sms_approved_services', 'meta_compare' => 'EXISTS']);
-                $enabled_providers = [];
+                $enabled_providers_count = 0;
                 foreach($all_providers as $prov) {
                     $prov_services = get_user_meta($prov->ID, 'sms_approved_services', true);
                     if (is_array($prov_services) && in_array($l->service_page_id, $prov_services)) {
-                        $com_name = get_user_meta($prov->ID, 'sms_commercial_name', true);
-                        $raz_soc = get_user_meta($prov->ID, 'billing_company', true);
-                        $enabled_providers[] = $com_name ?: ($raz_soc ?: $prov->display_name);
+                        $enabled_providers_count++;
                     }
                 }
-                $count_provs = count($enabled_providers);
             ?>
             <tr>
-                <td><?php echo $fecha_display; ?></td>
                 <td>
                     <?php echo ($l->is_verified) ? '<span style="color:green;">✅ Verif.</span>' : '<span style="color:red;">❌ No Verif.</span>'; ?><br>
-                    <strong><?php echo strtoupper($l->status); ?></strong>
+                    <strong><?php echo strtoupper($l->status); ?></strong><br>
+                    <small><?php echo date_i18n('d M, H:i', strtotime($l->created_at)); ?></small>
                 </td>
                 <td style="background:#f0f6fc;">
-                    <strong><?php echo esc_html($l->client_company); ?></strong><br>
+                    <strong><?php echo esc_html($l->client_company ?: 'Particular'); ?></strong><br>
                     👤 <?php echo esc_html($l->client_name); ?><br>
                     📞 <?php echo esc_html($l->client_phone); ?><br>
                     ✉️ <?php echo esc_html($l->client_email); ?>
+                </td>
+                <td>
+                    <span style="<?php echo $prio_style; ?>"><?php echo esc_html($l->priority); ?></span><br>
+                    📅 <strong><?php echo $l->deadline ? date('d M', strtotime($l->deadline)) : 'Lo antes posible'; ?></strong>
                 </td>
                 <td>
                     <strong><?php echo esc_html($service_name); ?></strong>
@@ -218,39 +235,36 @@ function sms_tab_leads() {
                             (Quedan: <?php echo $remaining; ?>)
                         </span>
                     </div>
-                    
-                    <div style="margin-top:5px;">
-                        <?php if($count_provs > 0): ?>
-                            <details style="cursor:pointer;">
-                                <summary style="color:#007cba; font-weight:bold; font-size:12px;">
-                                    🏭 <?php echo $count_provs; ?> Proveedores listos
-                                </summary>
-                                <ul style="margin:5px 0 0 15px; font-size:11px; list-style:disc; color:#555;">
-                                    <?php foreach($enabled_providers as $ep): ?>
-                                        <li><?php echo esc_html($ep); ?></li>
-                                    <?php endforeach; ?>
-                                </ul>
-                            </details>
-                        <?php else: ?>
-                            <span style="color:red; font-size:11px;">⚠️ Ningún proveedor habilitado</span>
-                        <?php endif; ?>
-                    </div>
+                    <div style="color:#007cba; font-size:11px;">🏭 Alcance: <?php echo $enabled_providers_count; ?> provs.</div>
                 </td>
                 <td>
-                    <form method="post" style="padding:5px;">
+                    <form method="post" style="padding:5px; background:#fafafa; border:1px solid #eee;">
                         <input type="hidden" name="lead_id" value="<?php echo $l->id; ?>">
-                        <textarea name="edited_req" style="width:100%; height:60px; font-size:12px; margin-bottom:5px;"><?php echo esc_textarea($l->requirement); ?></textarea>
                         
-                        <label style="font-size:12px;">Max Cupos:</label>
-                        <input type="number" name="edited_quota" value="<?php echo $l->max_quotas; ?>" style="width:60px; margin-bottom:5px;" min="1">
+                        <textarea name="edited_req" style="width:100%; height:50px; font-size:12px; margin-bottom:5px;"><?php echo esc_textarea($l->requirement); ?></textarea>
                         
-                        <div style="display:flex; gap:5px; align-items:center; margin-top:5px;">
-                            <button type="submit" name="action_lead" value="save_edit" class="button button-small">💾 Guardar Cambios</button>
-                            <?php if($l->status == 'pending'): ?>
-                                <input type="number" name="lead_cost" value="10" style="width:45px; height:25px;" min="1">
-                                <button type="submit" name="action_lead" value="approve" class="button button-primary button-small">Aprobar</button>
-                            <?php endif; ?>
+                        <div style="display:flex; gap:5px; margin-bottom:5px;">
+                            <select name="edited_priority" style="font-size:11px;">
+                                <option value="Normal" <?php selected($l->priority, 'Normal'); ?>>Normal</option>
+                                <option value="Urgente" <?php selected($l->priority, 'Urgente'); ?>>Urgente</option>
+                                <option value="Muy Urgente" <?php selected($l->priority, 'Muy Urgente'); ?>>Muy Urgente</option>
+                            </select>
+                            <input type="date" name="edited_deadline" value="<?php echo $l->deadline; ?>" style="font-size:11px;">
                         </div>
+
+                        <div style="display:flex; gap:5px; align-items:center;">
+                            <label style="font-size:11px;">Cupos:</label>
+                            <input type="number" name="edited_quota" value="<?php echo $l->max_quotas; ?>" style="width:50px;" min="1">
+                            <button type="submit" name="action_lead" value="save_edit" class="button button-small">💾 Guardar</button>
+                        </div>
+
+                        <?php if($l->status == 'pending'): ?>
+                            <div style="margin-top:10px; border-top:1px solid #ddd; padding-top:5px;">
+                                <label style="font-size:11px;">Costo (cr):</label>
+                                <input type="number" name="lead_cost" value="10" style="width:50px;" min="1">
+                                <button type="submit" name="action_lead" value="approve" class="button button-primary button-small">🚀 Aprobar</button>
+                            </div>
+                        <?php endif; ?>
                     </form>
                 </td>
                 <td style="text-align:center;">
@@ -271,28 +285,24 @@ function sms_tab_leads() {
 }
 
 // ==========================================
-// 4. PESTAÑA: PROVEEDORES (CORREGIDA)
+// 4. PESTAÑA: PROVEEDORES
 // ==========================================
 function sms_tab_providers() {
     global $wpdb;
 
-    // 1. PROCESAR ACCIONES
     if (isset($_POST['prov_action'])) {
         $uid = intval($_POST['user_id']);
         $prov_phone = get_user_meta($uid, 'sms_whatsapp_notif', true);
 
-        // APROBAR SERVICIOS
         if ($_POST['prov_action'] == 'approve_services') {
             $requested = get_user_meta($uid, 'sms_requested_services', true) ?: [];
             update_user_meta($uid, 'sms_approved_services', $requested);
-            
             if(function_exists('sms_send_msg') && $prov_phone) {
                 sms_send_msg($prov_phone, "✅ *Servicios Aprobados*\nTus categorías han sido habilitadas. Empezarás a recibir oportunidades.");
             }
             echo '<div class="notice notice-success"><p>✅ Servicios aprobados correctamente.</p></div>';
         }
 
-        // APROBAR DOCUMENTOS
         if ($_POST['prov_action'] == 'approve_docs') {
             update_user_meta($uid, 'sms_docs_status', 'verified');
             if(function_exists('sms_send_msg') && $prov_phone) {
@@ -301,7 +311,6 @@ function sms_tab_providers() {
             echo '<div class="notice notice-success"><p>✅ Documentos aprobados.</p></div>';
         }
 
-        // RECHAZAR DOCUMENTOS
         if ($_POST['prov_action'] == 'reject_docs') {
             update_user_meta($uid, 'sms_docs_status', 'rejected');
             delete_user_meta($uid, 'sms_company_docs'); 
@@ -311,7 +320,6 @@ function sms_tab_providers() {
             echo '<div class="notice notice-error"><p>❌ Documentos rechazados.</p></div>';
         }
         
-        // CAMBIO DE SALDO
         if ($_POST['prov_action'] == 'manual_credit') {
              $amt = intval($_POST['credit_amount']);
              $curr = (int) get_user_meta($uid, 'sms_wallet_balance', true);
@@ -320,7 +328,6 @@ function sms_tab_providers() {
         }
     }
 
-    // 2. OBTENER PROVEEDORES
     $users = get_users(['orderby' => 'ID', 'order' => 'DESC']); 
     ?>
     
@@ -331,7 +338,7 @@ function sms_tab_providers() {
                 <th>Empresa / Contacto</th>
                 <th>Estado WhatsApp</th>
                 <th>Documentos</th>
-                <th>Servicios (Solicitados vs Aprobados)</th>
+                <th>Servicios</th>
                 <th>Saldo</th>
             </tr>
         </thead>
@@ -339,15 +346,9 @@ function sms_tab_providers() {
             <?php foreach($users as $u): 
                 $docs_st = get_user_meta($u->ID, 'sms_docs_status', true);
                 $docs = get_user_meta($u->ID, 'sms_company_docs', true);
-                
-                // Comparar servicios
                 $req = get_user_meta($u->ID, 'sms_requested_services', true) ?: [];
                 $app = get_user_meta($u->ID, 'sms_approved_services', true) ?: [];
-                
-                // Detectar discrepancia (pendientes)
                 $has_pending_servs = (count($req) > count($app) || array_diff($req, $app));
-                
-                // Color de fondo si hay algo pendiente
                 $bg_style = ($has_pending_servs || $docs_st == 'pending') ? 'background:#fff9e6;' : '';
             ?>
             <tr style="<?php echo $bg_style; ?>">
@@ -356,7 +357,6 @@ function sms_tab_providers() {
                     <?php echo $u->user_email; ?><br>
                     📞 <?php echo get_user_meta($u->ID, 'billing_phone', true); ?>
                 </td>
-                
                 <td>
                     <?php $wa_st = get_user_meta($u->ID, 'sms_phone_status', true); ?>
                     <?php if($wa_st=='verified'): ?>
@@ -366,7 +366,6 @@ function sms_tab_providers() {
                         <span style="color:red;">❌ Pendiente</span>
                     <?php endif; ?>
                 </td>
-
                 <td>
                     <?php 
                         if($docs_st=='verified') echo '<strong style="color:green">Aprobado</strong>';
@@ -374,14 +373,12 @@ function sms_tab_providers() {
                         elseif($docs_st=='rejected') echo '<strong style="color:red">Rechazado</strong>';
                         else echo '<span style="color:#ccc">-</span>';
                     ?>
-                    
                     <?php if(!empty($docs) && is_array($docs)): ?>
                         <div style="margin:5px 0;">
                         <?php foreach($docs as $k=>$d): ?>
                             <a href="<?php echo $d; ?>" target="_blank" class="button button-small">📄 Ver Doc</a>
                         <?php endforeach; ?>
                         </div>
-                        
                         <?php if($docs_st == 'pending'): ?>
                         <form method="post" style="display:flex; gap:5px;">
                             <input type="hidden" name="user_id" value="<?php echo $u->ID; ?>">
@@ -391,11 +388,8 @@ function sms_tab_providers() {
                         <?php endif; ?>
                     <?php endif; ?>
                 </td>
-
                 <td>
-                    <div>Solicitados: <strong><?php echo count($req); ?></strong></div>
                     <div>Aprobados: <strong><?php echo count($app); ?></strong></div>
-                    
                     <?php if($has_pending_servs): ?>
                         <div style="color:#d63638; font-weight:bold; margin-top:5px; font-size:11px;">⚠️ Hay nuevos servicios</div>
                         <form method="post" style="margin-top:5px;">
@@ -406,7 +400,6 @@ function sms_tab_providers() {
                         <span style="color:green; font-size:11px;">✔ Todo al día</span>
                     <?php endif; ?>
                 </td>
-                
                 <td>
                     <strong><?php echo (int)get_user_meta($u->ID, 'sms_wallet_balance', true); ?> cr</strong>
                     <form method="post" style="margin-top:5px;">
@@ -432,7 +425,7 @@ function sms_tab_services() {
         $new_buttons = [];
         if(isset($_POST['btn_labels'])) {
             $labels = $_POST['btn_labels']; 
-            $quotas = $_POST['btn_quotas']; // Guardar cupos por botón
+            $quotas = $_POST['btn_quotas']; 
             $page_groups = $_POST['btn_pages_ids']; 
             
             for($i=0; $i < count($labels); $i++){
@@ -453,7 +446,6 @@ function sms_tab_services() {
     }
 
     $all_pages = get_pages(['post_status' => 'publish']);
-    
     $active = get_option('sms_active_service_pages', []);
     if (!is_array($active)) $active = [];
 
@@ -530,31 +522,24 @@ function sms_tab_services() {
 function sms_tab_requests() {
     global $wpdb;
 
-    // A. Procesar acción de marcar como atendido
     if(isset($_POST['req_action']) && $_POST['req_action'] == 'complete') {
         $req_id = intval($_POST['request_id']);
         $prov_id = intval($_POST['prov_id']);
         $serv_name = sanitize_text_field($_POST['serv_name']);
         
-        // Actualizar estado en BD
         $wpdb->update("{$wpdb->prefix}sms_service_requests", ['status' => 'completed'], ['id' => $req_id]);
         
-        // Notificar al proveedor por WhatsApp
         $prov_phone = get_user_meta($prov_id, 'sms_whatsapp_notif', true);
-        
         if(function_exists('sms_send_msg') && $prov_phone) {
-            $msg = "✅ *Solicitud Atendida*\n\nLa categoría: *$serv_name* ha sido creada en la plataforma.\n\nPor favor ingresa a tu perfil y selecciónala en la lista de servicios para empezar a recibir cotizaciones.";
+            $msg = "✅ *Solicitud Atendida*\n\nLa categoría: *$serv_name* ha sido creada en la plataforma.\n\nPor favor ingresa a tu perfil y selecciónala en la lista de servicios.";
             sms_send_msg($prov_phone, $msg);
         }
-        echo '<div class="notice notice-success is-dismissible"><p>✅ Solicitud marcada como completada y proveedor notificado por WhatsApp.</p></div>';
+        echo '<div class="notice notice-success is-dismissible"><p>✅ Solicitud marcada como completada y notificada.</p></div>';
     }
 
-    // B. Mostrar Tabla
     $reqs = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}sms_service_requests ORDER BY created_at DESC");
     ?>
     <h3>Solicitudes de Nuevas Categorías</h3>
-    <p class="description">Cuando un proveedor solicite un servicio que no existe: 1. Crea la página en WordPress. 2. Vuelve aquí y dale clic a "Creada & Notificar".</p>
-    
     <table class="widefat striped">
         <thead><tr><th>Fecha</th><th>Proveedor</th><th>Servicio Solicitado</th><th>Estado / Acción</th></tr></thead>
         <tbody>
@@ -609,21 +594,15 @@ function sms_tab_config() {
                 </td>
             </tr>
 
-            <tr><td colspan="2"><hr><h3>🎁 Incentivos (Growth)</h3></td></tr>
-            <tr style="background:#d4edda;">
-                <th>Bono Bienvenida</th>
-                <td>
-                    <input type="number" name="sms_welcome_bonus" value="<?php echo get_option('sms_welcome_bonus', 0); ?>" class="small-text">
-                    <p class="description">Créditos GRATIS al verificar WhatsApp (Responder ACEPTO). Pon 0 para desactivar.</p>
-                </td>
-            </tr>
+            <tr><td colspan="2"><hr><h3>🎁 Incentivos</h3></td></tr>
+            <tr><th>Bono Bienvenida</th><td><input type="number" name="sms_welcome_bonus" value="<?php echo get_option('sms_welcome_bonus', 0); ?>" class="small-text"></td></tr>
 
             <tr><td colspan="2"><hr><h3>💳 Recargas WooCommerce</h3></td></tr>
             <tr><th>ID Producto Recarga</th><td><input type="number" name="sms_product_id" value="<?php echo get_option('sms_product_id'); ?>" class="small-text"></td></tr>
             <tr><th>Créditos por Unidad</th><td><input type="number" name="sms_credits_qty" value="<?php echo get_option('sms_credits_qty', 100); ?>" class="small-text"></td></tr>
 
             <tr><td colspan="2"><hr><h3>📜 Legal</h3></td></tr>
-            <tr><th>URL Términos y Condiciones</th><td><input type="text" name="sms_terms_url" value="<?php echo get_option('sms_terms_url'); ?>" class="regular-text" placeholder="https://..."></td></tr>
+            <tr><th>URL Términos</th><td><input type="text" name="sms_terms_url" value="<?php echo get_option('sms_terms_url'); ?>" class="regular-text" placeholder="https://..."></td></tr>
         </table>
         <?php submit_button(); ?>
     </form>
@@ -686,4 +665,3 @@ function sms_check_order_for_credits($order_id) {
         $order->add_order_note("✅ Sistema B2B: +$credits_to_add créditos. Nuevo saldo: $new");
     }
 }
-
