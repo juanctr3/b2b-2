@@ -85,7 +85,7 @@ function sms_render_frontend() {
             <div id="smsWizardContainer">
                 
                 <h3 style="margin-top:0; margin-bottom:5px;">Solicitar Cotizaci&oacute;n</h3>
-                <p style="color:#666; font-size:13px; margin-bottom:15px;">Atendemos de inmediato tu solicitud.</p>
+                <p style="color:#666; font-size:13px; margin-bottom:15px;">Completa los pasos para recibir ofertas.</p>
                 
                 <div class="sms-progress">
                     <div class="sms-bar active" id="bar1"></div>
@@ -110,7 +110,7 @@ function sms_render_frontend() {
                         </div>
 
                         <label class="sms-label">¿Qué necesitas cotizar? (Detalla tu requerimiento)</label>
-                        <textarea name="req" id="inputReq" rows="5" class="sms-input" placeholder="Ej: Requerimos el servicio de XXXX, tenemos los siguientes detalles..... cotizar costos, traslados, ejecución, etc, Necesitamos las cotizaciones lo antes posible..." required></textarea>
+                        <textarea name="req" id="inputReq" rows="5" class="sms-input" placeholder="Ej: Necesito servicio de..." required></textarea>
 
                         <label class="sms-label">Nivel de Prioridad</label>
                         <select name="priority" class="sms-input">
@@ -262,9 +262,9 @@ function sms_render_frontend() {
             document.getElementById('smsPhoneCode').value = sel.options[sel.selectedIndex].getAttribute('data-code');
         }
 
-        // --- LÓGICA DEL WIZARD (PASOS) ---
+        // --- WIZARD LOGIC ---
         function nextStep(stepNum) {
-            // Validaciones Simples antes de avanzar
+            // Validaciones
             if(stepNum === 2) {
                 var req = document.getElementById('inputReq').value;
                 if(req.length < 5) { alert('Por favor describe tu requerimiento.'); return; }
@@ -274,11 +274,9 @@ function sms_render_frontend() {
                 if(!date) { alert('Selecciona una fecha límite.'); return; }
             }
 
-            // Ocultar todos, mostrar actual
             document.querySelectorAll('.sms-step-content').forEach(el => el.classList.remove('sms-step-active'));
             document.getElementById('step' + stepNum).classList.add('sms-step-active');
 
-            // Barras
             document.querySelectorAll('.sms-bar').forEach(el => el.classList.remove('active'));
             for(let i=1; i<=stepNum; i++) {
                 document.getElementById('bar' + i).classList.add('active');
@@ -289,14 +287,12 @@ function sms_render_frontend() {
             document.querySelectorAll('.sms-step-content').forEach(el => el.classList.remove('sms-step-active'));
             document.getElementById('step' + stepNum).classList.add('sms-step-active');
             
-            // Barras Update
             document.querySelectorAll('.sms-bar').forEach(el => el.classList.remove('active'));
             for(let i=1; i<=stepNum; i++) {
                 document.getElementById('bar' + i).classList.add('active');
             }
         }
         
-        // --- ENVÍO Y VERIFICACIÓN ---
         function goToStepCode(){ 
             document.getElementById('smsStepWaitInteraction').style.display='none'; 
             document.getElementById('smsStepCode').style.display='block'; 
@@ -304,8 +300,6 @@ function sms_render_frontend() {
 
         document.getElementById('smsLeadForm').addEventListener('submit', function(e){
             e.preventDefault();
-            
-            // Validar Terms
             if(!document.getElementById('smsTerms').checked) {
                 alert('Debes aceptar los términos y condiciones.'); return;
             }
@@ -317,7 +311,6 @@ function sms_render_frontend() {
             var fullPhone = document.getElementById('smsPhoneCode').value + document.getElementById('inputPhone').value;
             fd.append('phone', fullPhone);
 
-            // CAMBIO: Mostrar número en la siguiente pantalla
             document.getElementById('smsTargetPhone').innerText = fullPhone;
 
             fetch('<?php echo admin_url('admin-ajax.php'); ?>', {method:'POST', body:fd})
@@ -367,7 +360,6 @@ function sms_handle_step1() {
     $otp = rand(1000, 9999);
     
     $raw_phone = isset($_POST['phone']) ? $_POST['phone'] : '';
-    // Limpieza estricta: Solo números y el + inicial si existe
     $clean_phone = '+' . preg_replace('/[^0-9]/', '', $raw_phone); 
 
     $email = sanitize_email($_POST['email']);
@@ -394,7 +386,7 @@ function sms_handle_step1() {
     $wpdb->insert("{$wpdb->prefix}sms_leads", $data);
     $lid = $wpdb->insert_id;
     
-    // ENVIAR MENSAJE INICIAL (CAMBIO: Opción EMAIL Restaurada)
+    // ENVIAR MENSAJE AL CLIENTE
     if(function_exists('sms_send_msg')) {
         $msg = "👋 Hola, recibimos tu solicitud.\n\nPara enviarte el código de verificación, responde:\n\n👉 *WHATSAPP* para recibirlo por aquí.\n👉 *EMAIL* para enviarlo a tu correo.";
         sms_send_msg($clean_phone, $msg);
@@ -415,9 +407,13 @@ function sms_handle_step2() {
     if ($row && $row->verification_code == $code) {
         $wpdb->update("{$wpdb->prefix}sms_leads", ['is_verified' => 1], ['id' => $lid]);
         
+        // NOTIFICACIÓN AL ADMINISTRADOR (NUEVO)
         $admin_phone = get_option('sms_admin_phone');
         if($admin_phone && function_exists('sms_send_msg')) {
-            sms_send_msg($admin_phone, "🔔 Nueva cotización verificada #$lid. Revisa el panel.");
+            $prio = $row->priority;
+            $city = $row->city;
+            $msg = "🔔 *Nueva Cotización Verificada #$lid*\n🔥 Prioridad: $prio\n📍 $city\n\n👉 Entra al panel de control para aprobarla.";
+            sms_send_msg($admin_phone, $msg);
         }
         wp_send_json_success();
     } else {
@@ -425,7 +421,7 @@ function sms_handle_step2() {
     }
 }
 
-// SHORTCODE Perfil Público (Se mantiene igual)
+// SHORTCODE Perfil Público (Se mantiene)
 add_shortcode('sms_perfil_publico', 'sms_render_public_profile');
 function sms_render_public_profile() {
      if (!isset($_GET['uid'])) return '<p>Perfil no especificado.</p>';
@@ -481,6 +477,3 @@ function sms_render_public_profile() {
     <?php
     return ob_get_clean();
 }
-
-
-
