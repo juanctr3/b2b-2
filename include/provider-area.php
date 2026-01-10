@@ -16,10 +16,10 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     global $wpdb;
 
     // ==========================================
-    // A. PROCESAR FORMULARIOS (PERFIL, DOCS, SERVICIOS)
+    // A. PROCESAR FORMULARIOS
     // ==========================================
     
-    // 1. Guardar Perfil
+    // 1. Guardar Perfil (Datos + Logo)
     if (isset($_POST['save_provider_profile'])) {
         $old_wa = get_user_meta($uid, 'sms_whatsapp_notif', true);
         
@@ -27,24 +27,51 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         $phone_raw = sanitize_text_field($_POST['p_whatsapp_raw']);
         $new_wa_clean = $country_code . preg_replace('/[^0-9]/', '', $phone_raw);
 
+        // Guardar textos
         update_user_meta($uid, 'billing_company', sanitize_text_field($_POST['p_razon_social']));
         update_user_meta($uid, 'sms_commercial_name', sanitize_text_field($_POST['p_commercial_name']));
         update_user_meta($uid, 'sms_nit', sanitize_text_field($_POST['p_nit']));
         update_user_meta($uid, 'billing_address_1', sanitize_text_field($_POST['p_address']));
         update_user_meta($uid, 'billing_phone', sanitize_text_field($_POST['p_phone']));
         update_user_meta($uid, 'billing_email', sanitize_email($_POST['p_email']));
+        update_user_meta($uid, 'billing_phone', $new_wa_clean); 
         update_user_meta($uid, 'sms_whatsapp_notif', $new_wa_clean);
         update_user_meta($uid, 'sms_advisor_name', sanitize_text_field($_POST['p_advisor']));
         update_user_meta($uid, 'sms_company_desc', sanitize_textarea_field($_POST['p_desc']));
 
-        // Servicios
+        // Guardar Servicios
         $requested_pages = $_POST['p_servs'] ?? [];
         update_user_meta($uid, 'sms_requested_services', $requested_pages);
         if(!get_user_meta($uid, 'sms_approved_services', true)) {
             update_user_meta($uid, 'sms_approved_services', []);
         }
 
-        // Verificación WhatsApp
+        // --- LÓGICA DE LOGO (NUEVO) ---
+        if (!empty($_FILES['p_logo']['name'])) {
+            require_once(ABSPATH . 'wp-admin/includes/file.php');
+            require_once(ABSPATH . 'wp-admin/includes/image.php');
+            
+            $file = $_FILES['p_logo'];
+            $check = wp_check_filetype($file['name']);
+            
+            // Solo permitir imágenes
+            if (in_array($check['type'], ['image/jpeg', 'image/png', 'image/jpg'])) {
+                $upload = wp_handle_upload($file, ['test_form' => false]);
+                
+                if (!isset($upload['error']) && isset($upload['file'])) {
+                    // Redimensionar a 300x300 (Cuadrado perfecto)
+                    $editor = wp_get_image_editor($upload['file']);
+                    if (!is_wp_error($editor)) {
+                        $editor->resize(300, 300, true);
+                        $editor->save($upload['file']);
+                    }
+                    // Guardar URL
+                    update_user_meta($uid, 'sms_company_logo', $upload['url']);
+                }
+            }
+        }
+
+        // Lógica Verificación WhatsApp
         $msg_extra = "";
         if ($new_wa_clean && $new_wa_clean !== $old_wa) {
             update_user_meta($uid, 'sms_phone_status', 'pending');
@@ -55,7 +82,7 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                 $msg_extra = "<br>📨 <strong>¡Número Actualizado!</strong> Te enviamos un WhatsApp. Responde <b>CONFIRMADO</b> para activarlo.";
             }
         }
-        echo '<div class="woocommerce-message">✅ Perfil actualizado.' . $msg_extra . '</div>';
+        echo '<div class="woocommerce-message">✅ Perfil y Logo actualizados.' . $msg_extra . '</div>';
     }
 
     // 2. Solicitud Nuevo Servicio
@@ -66,7 +93,6 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
             if(!$exists) {
                 $wpdb->insert("{$wpdb->prefix}sms_service_requests", ['provider_user_id' => $uid, 'requested_service' => $serv_name]);
                 
-                // Notificar Admin
                 $admin_phone = get_option('sms_admin_phone');
                 $prov_name = wp_get_current_user()->display_name;
                 if(function_exists('sms_send_msg') && $admin_phone) {
@@ -128,48 +154,41 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
     $p_email = get_user_meta($uid, 'billing_email', true) ?: wp_get_current_user()->user_email;
     $p_advisor = get_user_meta($uid, 'sms_advisor_name', true);
     $p_desc = get_user_meta($uid, 'sms_company_desc', true);
+    $p_logo = get_user_meta($uid, 'sms_company_logo', true); // Logo Actual
     $wa_status = get_user_meta($uid, 'sms_phone_status', true);
 
-    // ==========================================
-    // C. OBTENCIÓN Y FILTRADO DE OPORTUNIDADES
-    // ==========================================
-    
-    // 1. Obtener IDs desbloqueados
-    $unlocked_rows = $wpdb->get_results("SELECT lead_id FROM {$wpdb->prefix}sms_lead_unlocks WHERE provider_user_id = $uid");
-    $unlocked_ids = [];
-    foreach($unlocked_rows as $ur) $unlocked_ids[] = $ur->lead_id;
-
-    // 2. Obtener Leads Crudos (Según servicios aprobados)
+    // OBTENER LEADS (Filtrado por servicios aprobados)
     $raw_leads = [];
     if (!empty($approved_servs)) {
         $ids_str = implode(',', array_map('intval', $approved_servs));
         $raw_leads = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}sms_leads WHERE service_page_id IN ($ids_str) AND status = 'approved'");
     }
 
-    // 3. Aplicar Filtros y Orden
-    $filter_status = isset($_GET['f_status']) ? $_GET['f_status'] : 'all'; // all, new, unlocked
-    $sort_order = isset($_GET['f_sort']) ? $_GET['f_sort'] : 'desc'; // desc, asc
+    // Obtener Desbloqueados
+    $unlocked_rows = $wpdb->get_results("SELECT lead_id FROM {$wpdb->prefix}sms_lead_unlocks WHERE provider_user_id = $uid");
+    $unlocked_ids = [];
+    foreach($unlocked_rows as $ur) $unlocked_ids[] = $ur->lead_id;
+
+    // Filtros y Orden
+    $filter_status = isset($_GET['f_status']) ? $_GET['f_status'] : 'all'; 
+    $sort_order = isset($_GET['f_sort']) ? $_GET['f_sort'] : 'desc'; 
 
     $final_leads = [];
     foreach($raw_leads as $lead) {
         $is_unlocked = in_array($lead->id, $unlocked_ids);
-        
-        // Filtro Lógico
         if ($filter_status == 'new' && $is_unlocked) continue;
         if ($filter_status == 'unlocked' && !$is_unlocked) continue;
-
         $lead->is_unlocked_by_me = $is_unlocked;
         $final_leads[] = $lead;
     }
 
-    // Ordenar Array en PHP
     usort($final_leads, function($a, $b) use ($sort_order) {
         $t1 = strtotime($a->created_at);
         $t2 = strtotime($b->created_at);
         return ($sort_order == 'asc') ? $t1 - $t2 : $t2 - $t1;
     });
 
-    // 4. Historial de Inversiones (Limit 20)
+    // Historial
     $history = $wpdb->get_results("
         SELECT u.*, l.city, l.service_page_id, l.client_name 
         FROM {$wpdb->prefix}sms_lead_unlocks u
@@ -179,7 +198,6 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         LIMIT 20
     ");
 
-    // UI Styles
     ?>
     <style>
         .sms-layout { display: flex; flex-wrap: wrap; gap: 25px; } 
@@ -187,11 +205,8 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         .sms-col-side { flex: 1; min-width: 280px; } 
         .sms-card { background: #fff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); padding: 25px; margin-bottom: 25px; border:1px solid #eee; }
         
-        /* Tarjetas de Leads Diferenciadas */
         .lead-item { border-bottom:1px solid #eee; padding:15px; margin-bottom:15px; border-radius:8px; border-left:4px solid #ddd; transition: transform 0.2s; }
         .lead-item:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
-        
-        /* Estilos Estados */
         .lead-new { border-left-color: #007cba; background: #fff; }
         .lead-unlocked { border-left-color: #25d366; background: #f0fff4; border: 1px solid #c3e6cb; border-left-width: 4px; }
         
@@ -203,10 +218,12 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
         .sms-toolbar { display:flex; justify-content:space-between; align-items:center; background:#f9f9f9; padding:10px; border-radius:8px; margin-bottom:15px; border:1px solid #eee; }
         .sms-filter-select { padding:5px; border-radius:4px; border:1px solid #ddd; font-size:13px; }
         
-        /* Historial */
         .sms-history-table { width:100%; border-collapse: collapse; font-size:12px; }
         .sms-history-table th { text-align:left; background:#f5f5f5; padding:8px; color:#555; }
         .sms-history-table td { border-bottom:1px solid #eee; padding:8px; }
+
+        /* Estilo para Logo Preview */
+        .logo-preview { width: 80px; height: 80px; object-fit: cover; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 10px; display: block; }
     </style>
 
     <div class="sms-layout">
@@ -238,8 +255,8 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                         <div style="display:flex; gap:10px; align-items:center;">
                             <label style="font-size:12px; font-weight:bold;">Orden:</label>
                             <select name="f_sort" class="sms-filter-select" onchange="this.form.submit()">
-                                <option value="desc" <?php selected($sort_order, 'desc'); ?>>📅 Recientes primero</option>
-                                <option value="asc" <?php selected($sort_order, 'asc'); ?>>📅 Antiguas primero</option>
+                                <option value="desc" <?php selected($sort_order, 'desc'); ?>>📅 Recientes</option>
+                                <option value="asc" <?php selected($sort_order, 'asc'); ?>>📅 Antiguas</option>
                             </select>
                         </div>
                     </form>
@@ -251,7 +268,6 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
                             $is_company = ($l->client_company !== 'Particular' && $l->client_company !== '(Persona Natural)');
                             $type_label = $is_company ? '🏢 Empresa' : '👤 Persona Natural';
                             
-                            // Determinar Clase CSS
                             $css_class = $l->is_unlocked_by_me ? 'lead-unlocked' : 'lead-new';
                             $status_badge = $l->is_unlocked_by_me 
                                 ? '<span style="background:#25d366; color:#fff; padding:3px 8px; border-radius:10px; font-size:10px; font-weight:bold;">🔓 YA LA TIENES</span>' 
@@ -296,7 +312,21 @@ add_action('woocommerce_account_zona-proveedor_endpoint', function() {
 
             <div class="sms-card">
                 <h3>🏢 Perfil de Empresa</h3>
-                <form method="post">
+                <form method="post" enctype="multipart/form-data"> <div style="background:#f9f9f9; padding:15px; border-radius:8px; margin-bottom:15px; border:1px solid #eee;">
+                        <label style="display:block; font-weight:bold; margin-bottom:5px;">Logo de la Empresa</label>
+                        <div style="display:flex; align-items:center; gap:15px;">
+                            <?php if($p_logo): ?>
+                                <img src="<?php echo esc_url($p_logo); ?>" class="logo-preview">
+                            <?php else: ?>
+                                <div class="logo-preview" style="background:#eee; display:flex; align-items:center; justify-content:center; color:#999;">Sin Logo</div>
+                            <?php endif; ?>
+                            <div>
+                                <input type="file" name="p_logo" accept="image/*">
+                                <p style="font-size:11px; color:#666; margin:5px 0 0 0;">Recomendado: Formato Cuadrado (300x300px). JPG o PNG.</p>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="row-2-col">
                         <div class="sms-input-group"><label>Razón Social</label><input type="text" name="p_razon_social" value="<?php echo esc_attr($p_razon); ?>" required></div>
                         <div class="sms-input-group"><label>NIT</label><input type="text" name="p_nit" value="<?php echo esc_attr($p_nit); ?>" required></div>
