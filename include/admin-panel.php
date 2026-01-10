@@ -26,8 +26,11 @@ add_action('admin_init', function() {
     // API & Webhook
     register_setting('sms_opts', 'sms_api_secret');
     register_setting('sms_opts', 'sms_account_id');
-    register_setting('sms_opts', 'sms_admin_phone');
-    register_setting('sms_opts', 'sms_webhook_secret'); 
+    register_setting('sms_opts', 'sms_webhook_secret');
+    
+    // Configuración de Notificaciones
+    register_setting('sms_opts', 'sms_admin_phone'); // Teléfono Admin para alertas
+    register_setting('sms_opts', 'sms_msg_delay');   // Retraso en segundos (Anti-bloqueo)
     
     // Servicios y Botones
     register_setting('sms_opts', 'sms_active_service_pages'); 
@@ -90,7 +93,7 @@ function sms_render_dashboard() {
 }
 
 // ==========================================
-// 3. PESTAÑA: COTIZACIONES (LEADS) - ACTUALIZADO
+// 3. PESTAÑA: COTIZACIONES (LEADS)
 // ==========================================
 function sms_tab_leads() {
     global $wpdb;
@@ -119,10 +122,13 @@ function sms_tab_leads() {
             echo '<div class="notice notice-success is-dismissible"><p>✅ Datos actualizados.</p></div>';
         }
         
-        // B. Aprobar y Distribuir
+        // B. Aprobar y Distribuir (CON SELECCIÓN DE PROVEEDORES)
         if ($_POST['action_lead'] == 'approve') {
             $cost = intval($_POST['lead_cost']);
             
+            // Recoger proveedores seleccionados (Array de IDs)
+            $selected_providers = isset($_POST['target_providers']) ? array_map('intval', $_POST['target_providers']) : [];
+
             $wpdb->update("{$wpdb->prefix}sms_leads", 
                 [
                     'status' => 'approved', 
@@ -135,15 +141,17 @@ function sms_tab_leads() {
                 ['id' => $lid]
             );
             
-            // Hook para enviar WhatsApp (webhook.php)
-            do_action('sms_notify_providers', $lid);
-            echo '<div class="notice notice-success is-dismissible"><p>🚀 Cotización Aprobada y Notificada.</p></div>';
+            // Hook para enviar WhatsApp (pasamos el ID del lead y la lista de elegidos)
+            do_action('sms_notify_providers', $lid, $selected_providers);
+            
+            $count_sent = count($selected_providers);
+            echo '<div class="notice notice-success is-dismissible"><p>🚀 Cotización Aprobada. Se notificará a <strong>'.$count_sent.'</strong> proveedores seleccionados.</p></div>';
         }
 
         // C. Despublicar
         if ($_POST['action_lead'] == 'unapprove') {
             $wpdb->update("{$wpdb->prefix}sms_leads", ['status' => 'pending'], ['id' => $lid]);
-            echo '<div class="notice notice-warning is-dismissible"><p>🚫 Cotización ocultada.</p></div>';
+            echo '<div class="notice notice-warning is-dismissible"><p>🚫 Cotización ocultada (Vuelve a Pendiente).</p></div>';
         }
 
         // D. Eliminar
@@ -169,7 +177,7 @@ function sms_tab_leads() {
             <input type="hidden" name="tab" value="leads">
             <select name="f_status">
                 <option value="all" <?php selected($filter_status, 'all'); ?>>Todos</option>
-                <option value="pending" <?php selected($filter_status, 'pending'); ?>>Pendientes</option>
+                <option value="pending" <?php selected($filter_status, 'pending'); ?>>Pendientes (Por aprobar)</option>
                 <option value="approved" <?php selected($filter_status, 'approved'); ?>>Publicados</option>
             </select>
             <input type="submit" class="button" value="Filtrar">
@@ -183,14 +191,14 @@ function sms_tab_leads() {
                 <th>Datos Contacto (Privado)</th>
                 <th>Urgencia / Cierre</th>
                 <th>Detalle / Cupos</th> 
-                <th style="width:30%;">Edición</th>
+                <th style="width:35%;">Gestión & Aprobación</th>
                 <th>Acciones</th>
             </tr>
         </thead>
         <tbody>
             <?php foreach($leads as $l): 
                 $page = get_post($l->service_page_id);
-                $service_name = $page ? $page->post_title : '(General)';
+                $service_name = $page ? $page->post_title : '(Servicio General)';
                 
                 // Urgencia Visual
                 $prio_style = 'color:green;';
@@ -201,13 +209,17 @@ function sms_tab_leads() {
                 $unlocks = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}sms_lead_unlocks WHERE lead_id={$l->id}");
                 $remaining = max(0, $l->max_quotas - $unlocks);
                 
-                // Proveedores habilitados
-                $all_providers = get_users(['meta_key' => 'sms_approved_services', 'meta_compare' => 'EXISTS']);
-                $enabled_providers_count = 0;
-                foreach($all_providers as $prov) {
-                    $prov_services = get_user_meta($prov->ID, 'sms_approved_services', true);
-                    if (is_array($prov_services) && in_array($l->service_page_id, $prov_services)) {
-                        $enabled_providers_count++;
+                // Buscar Proveedores Habilitados para este servicio (Para selector)
+                $eligible_providers = [];
+                if ($l->status == 'pending') {
+                    $all_users = get_users(['meta_key' => 'sms_approved_services', 'meta_compare' => 'EXISTS']);
+                    foreach($all_users as $prov) {
+                        $prov_services = get_user_meta($prov->ID, 'sms_approved_services', true);
+                        $phone_st = get_user_meta($prov->ID, 'sms_phone_status', true);
+                        if (is_array($prov_services) && in_array($l->service_page_id, $prov_services) && $phone_st == 'verified') {
+                            $p_name = get_user_meta($prov->ID, 'sms_commercial_name', true) ?: $prov->display_name;
+                            $eligible_providers[] = ['id' => $prov->ID, 'name' => $p_name];
+                        }
                     }
                 }
             ?>
@@ -235,13 +247,12 @@ function sms_tab_leads() {
                             (Quedan: <?php echo $remaining; ?>)
                         </span>
                     </div>
-                    <div style="color:#007cba; font-size:11px;">🏭 Alcance: <?php echo $enabled_providers_count; ?> provs.</div>
                 </td>
                 <td>
-                    <form method="post" style="padding:5px; background:#fafafa; border:1px solid #eee;">
+                    <form method="post" style="padding:10px; background:#fff; border:1px solid #ddd; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
                         <input type="hidden" name="lead_id" value="<?php echo $l->id; ?>">
                         
-                        <textarea name="edited_req" style="width:100%; height:50px; font-size:12px; margin-bottom:5px;"><?php echo esc_textarea($l->requirement); ?></textarea>
+                        <textarea name="edited_req" style="width:100%; height:50px; font-size:12px; margin-bottom:5px;" placeholder="Descripción..."><?php echo esc_textarea($l->requirement); ?></textarea>
                         
                         <div style="display:flex; gap:5px; margin-bottom:5px;">
                             <select name="edited_priority" style="font-size:11px;">
@@ -252,25 +263,50 @@ function sms_tab_leads() {
                             <input type="date" name="edited_deadline" value="<?php echo $l->deadline; ?>" style="font-size:11px;">
                         </div>
 
-                        <div style="display:flex; gap:5px; align-items:center;">
+                        <div style="display:flex; gap:5px; align-items:center; margin-bottom:10px;">
                             <label style="font-size:11px;">Cupos:</label>
                             <input type="number" name="edited_quota" value="<?php echo $l->max_quotas; ?>" style="width:50px;" min="1">
-                            <button type="submit" name="action_lead" value="save_edit" class="button button-small">💾 Guardar</button>
+                            <button type="submit" name="action_lead" value="save_edit" class="button button-small">💾 Guardar Cambios</button>
                         </div>
 
                         <?php if($l->status == 'pending'): ?>
-                            <div style="margin-top:10px; border-top:1px solid #ddd; padding-top:5px;">
-                                <label style="font-size:11px;">Costo (cr):</label>
-                                <input type="number" name="lead_cost" value="10" style="width:50px;" min="1">
-                                <button type="submit" name="action_lead" value="approve" class="button button-primary button-small">🚀 Aprobar</button>
+                            <div style="border-top:1px solid #ddd; padding-top:10px;">
+                                <div style="font-size:11px; font-weight:bold; margin-bottom:5px;">📢 Notificar a (<?php echo count($eligible_providers); ?>):</div>
+                                
+                                <div style="max-height:100px; overflow-y:auto; border:1px solid #eee; padding:5px; margin-bottom:5px; background:#fafafa;">
+                                    <?php if(empty($eligible_providers)): ?>
+                                        <div style="color:red; font-size:10px;">No hay proveedores activos para este servicio.</div>
+                                    <?php else: ?>
+                                        <label style="display:block; font-size:10px; border-bottom:1px solid #eee; margin-bottom:5px; padding-bottom:3px;">
+                                            <input type="checkbox" onchange="toggleAllProvs(this)" checked> <strong>Seleccionar Todos</strong>
+                                        </label>
+                                        <?php foreach($eligible_providers as $ep): ?>
+                                            <label style="display:block; font-size:11px;">
+                                                <input type="checkbox" name="target_providers[]" value="<?php echo $ep['id']; ?>" checked class="chk-prov"> 
+                                                <?php echo esc_html($ep['name']); ?>
+                                            </label>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </div>
+
+                                <div style="display:flex; align-items:center; justify-content:space-between;">
+                                    <div>
+                                        <label style="font-size:11px;">Costo (cr):</label>
+                                        <input type="number" name="lead_cost" value="10" style="width:50px;" min="1">
+                                    </div>
+                                    <button type="submit" name="action_lead" value="approve" class="button button-primary">🚀 Aprobar & Enviar</button>
+                                </div>
+                            </div>
+                        <?php else: ?>
+                            <div style="background:#e7f7d3; color:green; padding:5px; text-align:center; font-size:11px; font-weight:bold;">
+                                ✅ Publicada | Costo: <?php echo $l->cost_credits; ?> cr
                             </div>
                         <?php endif; ?>
                     </form>
                 </td>
                 <td style="text-align:center;">
                     <?php if($l->status == 'approved'): ?>
-                        <div style="margin-bottom:5px;"><strong><?php echo $l->cost_credits; ?></strong> cr</div>
-                        <form method="post"><input type="hidden" name="lead_id" value="<?php echo $l->id; ?>"><button type="submit" name="action_lead" value="unapprove" class="button button-small" style="color:orange;">🚫 Ocultar</button></form>
+                        <form method="post"><input type="hidden" name="lead_id" value="<?php echo $l->id; ?>"><button type="submit" name="action_lead" value="unapprove" class="button button-small" style="color:orange;">🚫 Pausar</button></form>
                     <?php endif; ?>
                     <form method="post" onsubmit="return confirm('¿Eliminar definitivamente?');" style="margin-top:10px;">
                         <input type="hidden" name="lead_id" value="<?php echo $l->id; ?>">
@@ -281,6 +317,15 @@ function sms_tab_leads() {
             <?php endforeach; ?>
         </tbody>
     </table>
+
+    <script>
+        function toggleAllProvs(source) {
+            var checkboxes = source.closest('form').querySelectorAll('.chk-prov');
+            for(var i=0; i<checkboxes.length; i++) {
+                checkboxes[i].checked = source.checked;
+            }
+        }
+    </script>
     <?php
 }
 
@@ -582,7 +627,10 @@ function sms_tab_config() {
             <tr><th colspan="2"><h3>📡 Conexión API (smsenlinea)</h3></th></tr>
             <tr><th>API Secret</th><td><input type="text" name="sms_api_secret" value="<?php echo get_option('sms_api_secret'); ?>" class="regular-text"></td></tr>
             <tr><th>Account ID</th><td><input type="text" name="sms_account_id" value="<?php echo get_option('sms_account_id'); ?>" class="regular-text"></td></tr>
-            <tr><th>Teléfono Admin</th><td><input type="text" name="sms_admin_phone" value="<?php echo get_option('sms_admin_phone'); ?>" class="regular-text"></td></tr>
+            
+            <tr><th colspan="2"><hr><h3>🔔 Configuración de Notificaciones</h3></th></tr>
+            <tr><th>Teléfono Admin (Alertas)</th><td><input type="text" name="sms_admin_phone" value="<?php echo get_option('sms_admin_phone'); ?>" class="regular-text"> <p class="description">Recibe avisos de nuevas cotizaciones.</p></td></tr>
+            <tr><th>Retraso entre mensajes (Segundos)</th><td><input type="number" name="sms_msg_delay" value="<?php echo get_option('sms_msg_delay', 0); ?>" class="small-text"> <p class="description">Tiempo de espera entre cada mensaje enviado a proveedores para evitar bloqueo (Ej: 3).</p></td></tr>
             
             <tr style="background:#e8f0fe;">
                 <th>Webhook Secret</th>
