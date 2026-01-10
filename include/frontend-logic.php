@@ -407,24 +407,36 @@ function sms_handle_step2() {
     if ($row && $row->verification_code == $code) {
         $wpdb->update("{$wpdb->prefix}sms_leads", ['is_verified' => 1], ['id' => $lid]);
         
-        // NOTIFICACIÓN AL ADMINISTRADOR (NUEVO)
+        // --- NOTIFICAR AL ADMINISTRADOR (WHATSAPP + EMAIL) ---
         $admin_phone = get_option('sms_admin_phone');
+        $prio = $row->priority;
+        $city = $row->city;
+        $admin_msg = "🔔 *Nueva Cotización Verificada #$lid*\n🔥 Prioridad: $prio\n📍 $city\n\n👉 Entra al panel de control para aprobarla.";
+        
+        // 1. WhatsApp Admin
         if($admin_phone && function_exists('sms_send_msg')) {
-            $prio = $row->priority;
-            $city = $row->city;
-            $msg = "🔔 *Nueva Cotización Verificada #$lid*\n🔥 Prioridad: $prio\n📍 $city\n\n👉 Entra al panel de control para aprobarla.";
-            sms_send_msg($admin_phone, $msg);
+            sms_send_msg($admin_phone, $admin_msg);
         }
+        
+        // 2. Email Admin (Respaldo)
+        $admin_email = get_option('admin_email'); // Email general de WordPress
+        if($admin_email) {
+            $subj = "Nueva Cotización Pendiente #$lid";
+            $body = "<h3>¡Nueva Oportunidad Generada!</h3><p><strong>Cliente:</strong> {$row->client_name}</p><p><strong>Ubicación:</strong> $city</p><p><strong>Requerimiento:</strong><br>{$row->requirement}</p><hr><p><a href='".admin_url('admin.php?page=sms-b2b')."'>Ir al Panel de Control</a></p>";
+            wp_mail($admin_email, $subj, $body, ['Content-Type: text/html; charset=UTF-8']);
+        }
+
         wp_send_json_success();
     } else {
         wp_send_json_error();
     }
 }
 
-// SHORTCODE Perfil Público (Se mantiene)
+// SHORTCODE Perfil Público (DISEÑO MEJORADO)
 add_shortcode('sms_perfil_publico', 'sms_render_public_profile');
+
 function sms_render_public_profile() {
-     if (!isset($_GET['uid'])) return '<p>Perfil no especificado.</p>';
+    if (!isset($_GET['uid'])) return '<p>Perfil no especificado.</p>';
     $uid = intval($_GET['uid']);
     $user = get_userdata($uid);
     if (!$user) return '<p>Proveedor no encontrado.</p>';
@@ -435,6 +447,7 @@ function sms_render_public_profile() {
     $phone = get_user_meta($uid, 'sms_whatsapp_notif', true); 
     $email = get_user_meta($uid, 'billing_email', true) ?: $user->user_email;
     $advisor = get_user_meta($uid, 'sms_advisor_name', true);
+    $logo = get_user_meta($uid, 'sms_company_logo', true); // LOGO
     $doc_status = get_user_meta($uid, 'sms_docs_status', true);
     
     if($doc_status != 'verified') {
@@ -443,18 +456,37 @@ function sms_render_public_profile() {
 
     ob_start();
     ?>
+    <style>
+        .sms-profile-header { background: #007cba; color: #fff; padding: 40px 20px; border-radius: 10px 10px 0 0; text-align: center; }
+        .sms-profile-logo-img { width: 100px; height: 100px; object-fit: cover; border-radius: 50%; border: 4px solid rgba(255,255,255,0.3); background: #fff; margin-bottom: 15px; }
+        .sms-profile-body { background: #fff; border: 1px solid #ddd; border-top: none; border-radius: 0 0 10px 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+        .sms-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        
+        /* Responsive para Celulares */
+        @media (max-width: 768px) {
+            .sms-grid-2 { grid-template-columns: 1fr; } /* Pasa a 1 columna */
+        }
+    </style>
+
     <div style="max-width:800px; margin:0 auto; font-family:sans-serif; color:#333;">
-        <div style="background:#007cba; color:#fff; padding:40px 20px; border-radius:10px 10px 0 0; text-align:center;">
-            <div style="font-size:50px; margin-bottom:10px;">🏭</div>
+        <div class="sms-profile-header">
+            <?php if($logo): ?>
+                <img src="<?php echo esc_url($logo); ?>" class="sms-profile-logo-img">
+            <?php else: ?>
+                <div style="font-size:60px; margin-bottom:10px;">🏭</div>
+            <?php endif; ?>
+            
             <h1 style="margin:0; font-size:28px;"><?php echo esc_html($com_name); ?></h1>
             <p style="opacity:0.9;">Proveedor Verificado en la Plataforma</p>
         </div>
-        <div style="background:#fff; border:1px solid #ddd; border-top:none; border-radius:0 0 10px 10px; padding:30px; box-shadow:0 4px 10px rgba(0,0,0,0.05);">
+        
+        <div class="sms-profile-body">
             <div style="margin-bottom:30px;">
                 <h3 style="border-bottom:2px solid #f0f0f0; padding-bottom:10px;">Sobre Nosotros</h3>
                 <p style="line-height:1.6; color:#555;"><?php echo nl2br(esc_html($desc)); ?></p>
             </div>
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+            
+            <div class="sms-grid-2">
                 <div style="background:#f9f9f9; padding:20px; border-radius:8px;">
                     <h4 style="margin-top:0;">📞 Contacto Comercial</h4>
                     <p><strong>Asesor:</strong> <?php echo esc_html($advisor ?: 'Gerencia'); ?></p>
@@ -469,6 +501,7 @@ function sms_render_public_profile() {
                     </div>
                 </div>
             </div>
+            
             <div style="text-align:center; margin-top:30px;">
                 <a href="https://wa.me/<?php echo str_replace('+','',$phone); ?>" class="button" style="background:#25d366; color:#fff; padding:12px 25px; border-radius:50px; text-decoration:none; font-size:18px;">Solicitar Cotización Directa</a>
             </div>
