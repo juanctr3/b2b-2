@@ -211,35 +211,26 @@ function sms_render_frontend() {
                 </form>
             </div>
 
-            <div id="smsStepWaitInteraction" style="display:none; text-align:center;">
-                <h3 style="color:#007cba;">&#128172; Revisa tu WhatsApp</h3>
-                
-                <p>Te hemos enviado un mensaje al:<br><strong id="smsTargetPhone" style="font-size:16px; color:#333;">...</strong></p>
-                
-                <div style="background:#e8f0fe; padding:15px; border-radius:8px; margin:15px 0; border:1px solid #b8daff;">
-                    <p style="margin:0; font-weight:bold; font-size:14px; color:#555;">Responde al mensaje con la opción:</p>
-                    <div style="display:flex; justify-content:center; gap:10px; margin-top:10px;">
-                        <span style="background:#fff; padding:5px 10px; border-radius:5px; font-weight:bold; color:#004085; border:1px solid #b8daff;">WHATSAPP</span>
-                        <span style="align-self:center; font-size:12px;">ó</span>
-                        <span style="background:#fff; padding:5px 10px; border-radius:5px; font-weight:bold; color:#004085; border:1px solid #b8daff;">EMAIL</span>
-                    </div>
-                    <p style="margin:10px 0 0 0; font-size:11px; color:#666;">Para recibir tu código de verificación.</p>
-                </div>
-                
-                <div style="margin:20px auto;" class="sms-animate-pulse">⏳</div>
-                <p style="font-size:12px; color:#666;">Esperando tu respuesta...</p>
-                
-                <button onclick="goToStepCode()" class="sms-btn-submit" style="background:#fff; color:#007cba; border:1px solid #007cba; margin-top:10px;">Ya respond&iacute;, tengo el c&oacute;digo</button>
-            </div>
+            <div id="smsStepVerification" style="display:none; text-align:center;">
+    <h3 style="color:#007cba;">💬 Verifica tu Solicitud</h3>
+    <p>Te enviamos un mensaje al: <br><strong id="smsTargetPhone" style="font-size:16px; color:#333;">...</strong></p>
+    
+    <div style="background:#f0f7ff; padding:15px; border-radius:8px; margin:15px 0; border:1px solid #d0e3ff;">
+        <p style="margin:0; font-weight:bold; font-size:14px;">Responde al WhatsApp con la palabra:</p>
+        <div style="display:flex; justify-content:center; gap:10px; margin-top:10px;">
+            <span style="background:#fff; padding:5px 12px; border-radius:5px; font-weight:bold; color:#007cba; border:1px solid #007cba;">WHATSAPP</span>
+        </div>
+        <p style="margin:10px 0 0 0; font-size:11px; color:#666;">Al responder, recibirás tu código de 4 dígitos.</p>
+    </div>
 
-            <div id="smsStepCode" style="display:none; text-align:center;">
-                <h3>&#128272; Ingresa el C&oacute;digo</h3>
-                <p>Ingresa el número de 4 dígitos que te enviamos.</p>
-                <input type="text" id="otpInput" class="sms-input" placeholder="0000" style="text-align:center; font-size:24px; letter-spacing:5px; width:150px; margin: 0 auto; display:block;">
-                <input type="hidden" id="tempLeadId">
-                <button onclick="verifyOtp()" class="sms-btn-next">Verificar</button>
-                <p id="otpError" style="color:red; font-size:13px; margin-top:5px;"></p>
-            </div>
+    <div style="margin-top:20px;">
+        <label class="sms-label">Ingresa el código recibido:</label>
+        <input type="text" id="otpInput" class="sms-input" placeholder="0000" style="text-align:center; font-size:24px; letter-spacing:8px; width:180px; margin: 10px auto; display:block; border: 2px solid #007cba;">
+        <input type="hidden" id="tempLeadId">
+        <button onclick="verifyOtp()" class="sms-btn-next">Validar Código</button>
+        <p id="otpError" style="color:red; font-size:13px; margin-top:5px;"></p>
+    </div>
+</div>
 
             <div id="smsStepSuccess" style="display:none; text-align:center;">
                 <h1 style="font-size:40px; margin:0;">&#9989;</h1>
@@ -520,4 +511,5 @@ function sms_render_public_profile() {
     <?php
     return ob_get_clean();
 }
+
 
