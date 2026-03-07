@@ -329,22 +329,29 @@ function sms_render_frontend() {
         });
 
         function verifyOtp(){
-            var fd = new FormData();
-            fd.append('action', 'sms_verify_otp');
-            fd.append('lead_id', document.getElementById('tempLeadId').value);
-            fd.append('code', document.getElementById('otpInput').value);
+    var btn = document.querySelector('#smsStepVerification button');
+    btn.innerHTML = 'Validando...';
+    btn.disabled = true;
 
-            fetch('<?php echo admin_url('admin-ajax.php'); ?>', {method:'POST', body:fd})
-            .then(r=>r.json())
-            .then(d=>{
-                if(d.success){
-                    document.getElementById('smsStepCode').style.display='none';
-                    document.getElementById('smsStepSuccess').style.display='block';
-                } else {
-                    document.getElementById('otpError').innerText = 'Código incorrecto. Intenta de nuevo.';
-                }
-            });
+    var fd = new FormData();
+    fd.append('action', 'sms_verify_otp');
+    fd.append('lead_id', document.getElementById('tempLeadId').value);
+    fd.append('code', document.getElementById('otpInput').value);
+
+    fetch('<?php echo admin_url('admin-ajax.php'); ?>', {method:'POST', body:fd})
+    .then(r=>r.json())
+    .then(d=>{
+        if(d.success){
+            // Esta es la línea clave: ocultamos el nuevo panel unificado
+            document.getElementById('smsStepVerification').style.display='none';
+            document.getElementById('smsStepSuccess').style.display='block';
+        } else {
+            document.getElementById('otpError').innerText = 'Código incorrecto. Intenta de nuevo.';
+            btn.innerHTML = 'Validar Código';
+            btn.disabled = false;
         }
+    });
+}
     </script>
     <?php
 }
@@ -511,5 +518,6 @@ function sms_render_public_profile() {
     <?php
     return ob_get_clean();
 }
+
 
 
