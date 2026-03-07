@@ -46,7 +46,17 @@ function sms_render_frontend() {
         .sms-modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; justify-content: center; align-items: center; }
         .sms-modal-box { background: #fff; width: 90%; max-width: 450px; padding: 25px; border-radius: 12px; position: relative; max-height: 90vh; overflow-y: auto; display:flex; flex-direction:column; }
         
-        .sms-input { width: 100%; padding: 12px; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size:14px; }
+        .sms-input { 
+    width: 100%; 
+    padding: 10px 12px; 
+    margin-bottom: 15px; 
+    border: 1px solid #ddd; 
+    border-radius: 6px; 
+    box-sizing: border-box; 
+    font-size: 14px;
+    min-height: 45px; /* Esto evita que el texto se corte abajo */
+    line-height: 1.5; 
+}
         .sms-label { font-size:12px; font-weight:bold; margin-bottom:5px; display:block; color:#333; }
         
         .sms-btn-next { width: 100%; padding: 12px; background: #007cba; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 10px; font-weight:bold; }
@@ -510,3 +520,4 @@ function sms_render_public_profile() {
     <?php
     return ob_get_clean();
 }
+
